@@ -1,0 +1,30 @@
+# Changes here will be overwritten by Copier
+_commit: v1.54
+_src_path: gh:emcd/python-project-common
+author_email: emcd@users.noreply.github.com
+author_name: Eric McDonald
+description: Converser for various LLMs.
+development_status: 3 - Alpha
+distribution_name: vibe-llms-converser
+enable_cli: true
+enable_executables: false
+enable_property_tests: false
+enable_publication: false
+enable_rust_extension: false
+gh_owner: emcd
+include_data_resources: true
+inject_exceptions: true
+inject_foundations: true
+package_name: converser
+project_name: vibe-py-llms-converser
+pypy_versions:
+- '3.10'
+- '3.11'
+python_version_min: '3.10'
+python_versions:
+- '3.10'
+- '3.11'
+- '3.12'
+- '3.13'
+- '3.14'
+year_of_origin: 2025

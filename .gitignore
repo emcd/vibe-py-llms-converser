@@ -1,0 +1,7 @@
+.env
+*.so
+.*.swp
+__pycache__/
+bugs/
+build/
+dist/
