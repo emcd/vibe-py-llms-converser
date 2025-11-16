@@ -159,20 +159,31 @@ Build a simpler, focused architecture for LLM conversation management with learn
   - id: str
   - canisters: list[Canister]
   - metadata: ConversationMetadata  # name, created, updated, tags, etc.
-  - save() / load()
-  - branch(from_index: int) -> Conversation  # create conversation fork
+  - save() / restore()
+  - fork(from_index: int) -> Conversation  # create conversation fork
 
 # Storage (hybrid format)
 - JSONL for message history: conversations/{id}/messages.jsonl
 - TOML for metadata: conversations/{id}/metadata.toml
 - Directory hierarchy: proven ai-experiments structure for content separation
+
+# Content storage (non-textual content)
+- Separate directories with content-based IDs (hash-based)
+- Enables content sharing across forked conversations
+- Example structure:
+  - conversations/{conversation-id}/messages.jsonl       # Textual content inline
+  - conversations/{conversation-id}/metadata.toml
+  - content/{content-hash}/data                          # Actual binary content
+  - content/{content-hash}/metadata.toml                 # MIME type, size, etc.
 ```
 
 **Rationale**:
 - JSONL improves readability/navigability over single JSON
 - TOML for metadata maintains human-readable configuration
 - Directory hierarchy prevents bloat and separates concerns
-- Conversation branching/forking included (already implemented in ai-experiments, not complex)
+- **Content deduplication**: Hash-based storage allows forked conversations to reference same content
+- **Efficient forking**: Only textual content duplicated; images/videos shared via reference
+- Conversation forking included (already implemented in ai-experiments, not complex)
 
 #### 4. Callback/Event System
 
@@ -225,7 +236,7 @@ vibe chat --model claude-sonnet-4.5
 **Non-Negotiable**:
 - Tool/function calling support (InvocationsProcessor)
 - Multimodal content architecture (ImageContent from start)
-- Conversation branching/forking
+- Conversation forking
 - Full type annotations throughout codebase
 
 **Provider Implementations Required**:
@@ -288,26 +299,153 @@ vibe chat --model claude-sonnet-4.5
 - Use Latin-derived nomenclature (SupervisorCanister not SystemCanister)
 - Separate content types per modality (TextualContent, ImageContent, etc.)
 
-## Open Questions Requiring Clarification
+## Architecture Clarifications
 
-### 1. Model Discovery/Organization
+### Model Discovery/Organization: Keep ModelsIntegrator
 
-**Original suggestion**: "Simpler model discovery/organization"
+**Decision**: **Preserve** the `ModelsIntegrator` with regex pattern matching and genus-based organization from ai-experiments
 
-**Question for stakeholder**: What specifically about the current `ModelsIntegrator` with regex pattern matching and genus-based organization needs clarification?
+**Rationale** (from stakeholder review):
+> "ModelsIntegrator attribute merging is valuable because when Anthropic releases new models...they can automatically inherit attributes...from their families."
 
-**Current approach in ai-experiments**:
-- Genus-based model categorization (converser, vectorizer, generators)
-- `ModelsIntegrator` for attribute merging with regex patterns
-- Descriptor-driven configuration
+**How it works**:
+1. **Regex pattern matching**: Model names match patterns like `^claude-.*$`
+2. **Family-based inheritance**: New models (e.g., `claude-sonnet-5.0`) automatically inherit attributes from their family pattern
+3. **Attribute merging**: `ModelsIntegrator` merges configuration hierarchically:
+   - Base provider defaults
+   - Model family attributes (matched by regex)
+   - Specific model overrides
 
-**Possible interpretations of "simpler"**:
-1. Hardcode model lists instead of pattern matching?
-2. Simplify the genus taxonomy?
-3. Remove `ModelsIntegrator` attribute merging?
-4. Use provider API discovery instead of configuration?
+**Example**:
+```toml
+# Provider-level defaults
+[defaults]
+temperature = 1.0
 
-**Requested**: Clarification on what aspect needs simplification or if current approach should be preserved
+# Family pattern for all Claude models
+[[models]]
+pattern = "^claude-.*$"
+max_tokens = 4096
+supports_tools = true
+
+# Specific model override
+[[models]]
+pattern = "^claude-opus-.*$"
+max_tokens = 8192  # Opus models get higher limit
+```
+
+When `claude-sonnet-5.0` is released:
+- Automatically matches `^claude-.*$` pattern
+- Inherits `max_tokens = 4096` and `supports_tools = true`
+- No configuration update needed
+
+**Benefits**:
+- **Future-proof**: New models work without configuration changes
+- **DRY**: Family attributes defined once, inherited by all matching models
+- **Flexible**: Specific models can override family defaults
+- **Maintainable**: Less configuration to maintain
+
+**Conclusion**: Keep the proven ModelsIntegrator architecture from ai-experiments
+
+### Content Storage for Non-Textual Content
+
+**Question** (from stakeholder review): How should we handle "non-textual content within messages" (images, audio, video)?
+
+**Decision**: Use **hash-based content storage** with separate directories, preserving the ai-experiments approach
+
+**Architecture**:
+
+```
+project-root/
+├── conversations/
+│   ├── conv-001/
+│   │   ├── messages.jsonl          # Conversation messages
+│   │   └── metadata.toml            # Conversation metadata
+│   └── conv-002/                    # Forked from conv-001
+│       ├── messages.jsonl
+│       └── metadata.toml
+└── content/
+    ├── a1b2c3.../                   # Content hash (SHA-256)
+    │   ├── data                     # Raw binary content
+    │   └── metadata.toml            # MIME type, size, created
+    └── d4e5f6.../
+        ├── data
+        └── metadata.toml
+```
+
+**Message storage with content references**:
+
+```jsonl
+{"role": "user", "timestamp": "2025-11-15T10:00:00Z", "content": [
+  {"type": "text", "text": "What's in this image?"},
+  {"type": "image", "content_id": "a1b2c3d4e5f6..."}
+]}
+```
+
+**Content metadata example**:
+```toml
+# content/a1b2c3d4e5f6.../metadata.toml
+[content]
+id = "a1b2c3d4e5f6..."
+mime_type = "image/png"
+size_bytes = 524288
+created = 2025-11-15T10:00:00Z
+hash_algorithm = "sha256"
+```
+
+**Key benefits**:
+
+1. **Deduplication**: Same image uploaded multiple times stored once
+2. **Efficient forking**: Forked conversations reference same content
+   - Original: `conv-001/messages.jsonl` → `content/a1b2c3.../data`
+   - Fork: `conv-002/messages.jsonl` → `content/a1b2c3.../data` (same ref)
+3. **Content integrity**: Hash-based IDs prevent corruption
+4. **Space efficiency**: Large binary files not duplicated
+5. **Clean separation**: Conversations contain only text + refs, content stored separately
+
+**Content lifecycle**:
+
+```python
+# 1. User adds image to conversation
+image_data = read_image("photo.png")
+content_hash = hashlib.sha256(image_data).hexdigest()
+content_id = f"{content_hash[:16]}..."  # Truncated for brevity
+
+# 2. Store content if not already present
+content_dir = Path(f"content/{content_id}")
+if not content_dir.exists():
+    content_dir.mkdir(parents=True)
+    (content_dir / "data").write_bytes(image_data)
+    (content_dir / "metadata.toml").write_text(toml.dumps({
+        "content": {
+            "id": content_id,
+            "mime_type": "image/png",
+            "size_bytes": len(image_data),
+            "created": datetime.now().isoformat(),
+            "hash_algorithm": "sha256",
+        }
+    }))
+
+# 3. Add message with content reference
+conversation.add_canister(UserCanister(
+    content=[
+        TextualContent(text="What's in this image?"),
+        ImageContent(content_id=content_id)
+    ]
+))
+
+# 4. Forking preserves references
+forked_conv = conversation.fork(from_index=5)
+# forked_conv still references content/{content_id}/data
+```
+
+**Garbage collection considerations**:
+
+- Content not referenced by any conversation can be removed
+- Implement reference counting or mark-and-sweep
+- Defer to future; not essential for MVP
+
+**Conclusion**: Hash-based content storage with separate directories enables efficient conversation forking while deduplicating binary content
 
 ## Architecture Decision Records
 
@@ -475,7 +613,7 @@ vibe chat --model claude-sonnet-4.5
 - Full type annotations from start
 - Multimodal content designed from start (separate types per modality)
 - Streaming opt-out by default (not opt-in)
-- Conversation branching/forking included in MVP
+- Conversation forking included in MVP
 - Function calling in MVP (non-negotiable)
 - Multiple provider implementations (Anthropic, Ollama/VLLM, OpenAI×2)
 
