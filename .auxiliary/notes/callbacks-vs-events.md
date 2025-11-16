@@ -495,48 +495,122 @@ If we want to minimize risk and maximize short-term velocity:
 - Dynamic plugin architecture requiring runtime subscription
 - Distributed architecture with multiple MCP servers
 
-## Open Questions
+## Open Questions (ANSWERED)
 
-1. **Do we anticipate multiple concurrent consumers of conversation events in MVP?**
-   - If yes: Event bus
-   - If no: Callbacks
+### Question 1: Multiple Concurrent Consumers in MVP?
 
-2. **How critical is MCP server support in Phase 1?**
-   - Critical: Event bus (better integration model)
-   - Can defer: Callbacks (bridge to MCP later)
+**Answer**: **No** concurrent event consumers in MVP
 
-3. **What is the expected plugin/extension model?**
-   - Dynamic, runtime plugins: Event bus
-   - Static, compile-time configuration: Callbacks
+**Rationale** (from stakeholder review):
+> "No multiple concurrent consumers of conversation events in MVP"
 
-4. **Error handling philosophy: fail-fast or resilient?**
-   - Fail-fast (errors should halt conversation): Callbacks
-   - Resilient (some handlers can fail): Event bus
+However, potential future needs if wrapping with TUI/GUI interfaces.
+
+**Decision Impact**: Supports callbacks approach for MVP
+
+### Question 2: MCP Server Support Criticality
+
+**Answer**: **Distinction required** - two separate concerns:
+
+1. **Calling tools on MCP servers**: **NOT deferred**, required for MVP
+   - This is about invoking tools that live on MCP servers
+   - Part of invocables architecture
+   - Critical functionality
+
+2. **Wrapping converser as MCP server**: **Can be deferred**
+   - This is about exposing the converser itself as an MCP server
+   - Integration with Claude Code desired but not Phase 1 critical
+   - Can be added later
+
+**Rationale** (from stakeholder review):
+> "MCP server support is not immediately critical" for the library itself, though integration with Claude Code was desired. Stressed that calling tools on MCP servers was *not* deferred, only wrapping the converser as an MCP server itself.
+
+**Decision Impact**: Callbacks work well for tool invocation; event bus not required for MCP tool calling
+
+### Question 3: Plugin/Extension Model
+
+**Answer**: **Needs clarification**
+
+**Stakeholder question**:
+> "Is this about adding event types via extensions?"
+
+**Current understanding**: This question relates to whether plugins would need to:
+- Add new event types dynamically (suggests event bus)
+- Subscribe to existing events (can work with either approach)
+- Extend core functionality through callbacks (callbacks sufficient)
+
+**Decision pending**: Awaiting clarification on extension requirements
+
+### Question 4: Error Handling Philosophy
+
+**Answer**: **Fail-fast**
+
+**Rationale** (from stakeholder review):
+> "If a chat completion fails, we need to alert the user and roll back any GUI/TUI changes."
+
+**Decision Impact**:
+- Errors should halt conversation
+- User alerts required
+- GUI/TUI rollback needed
+- Strongly supports callbacks (exceptions propagate naturally)
+
+## Decision Summary (Based on Answered Questions)
+
+### Factors Favoring Callbacks for MVP
+
+1. ✅ **No concurrent consumers** in MVP phase
+2. ✅ **Fail-fast error handling** required (natural exception propagation)
+3. ✅ **MCP tool calling** doesn't require event bus architecture
+4. ✅ **Proven approach** from ai-experiments (2.5 years production)
+
+### Factors Neutral/Future
+
+1. ⏸️ **Plugin/extension model** - awaiting clarification
+2. ⏸️ **Wrapping as MCP server** - deferred, not MVP requirement
+3. ⏸️ **TUI/GUI integration** - potential future need for multiple consumers
+
+### Recommended Approach
+
+**Hybrid: Event-Based Callbacks** (as originally recommended)
+
+**Implementation**:
+- Callbacks accept event objects (ConversationReactors pattern)
+- Events are first-class, serializable value objects
+- Optional event bus can be added later without breaking changes
+
+**Rationale**:
+- All MVP requirements met with callbacks
+- Events-as-objects design preserves migration path
+- Fail-fast error handling works naturally
+- No overhead from unused event bus infrastructure
+- Future TUI/GUI needs can trigger event bus adoption
 
 ## Recommended Next Steps
 
-1. **User Decision**: Based on answers to open questions above, choose:
-   - **Hybrid** (recommended): Event-based callbacks with migration path
-   - **Pure Callbacks**: Safest, proven approach
-   - **Event Bus**: If multiple consumers are known requirement
+1. ✅ **Decision Made**: Event-based callbacks (hybrid approach)
+   - Documented in ADR-003 (see architecture-initial.md)
 
-2. **Prototype**: Build small proof-of-concept showing:
-   - Event definitions
-   - Callback/bus invocation
-   - Error handling
-   - MCP integration (mocked)
+2. **Implement**: Build MVP with event-based callbacks
+   - Define event classes for all conversation lifecycle points
+   - Implement ConversationReactors with typed event parameters
+   - Design events for serialization (MCP compatibility)
 
-3. **Document Decision**: Create ADR-004 documenting the choice
-
-4. **Implement**: Build MVP with chosen approach
+3. **Future Migration Trigger**: Move to event bus when:
+   - TUI/GUI wrapper needs multiple event consumers
+   - Plugin system requires runtime event subscription
+   - Distributed architecture emerges
 
 ## Conclusion
 
-The **hybrid approach** (event-based callbacks with event bus migration path) offers the best balance:
-- Maintains proven callback simplicity for MVP
-- Designs events as first-class citizens from day one
-- Provides clear migration path when needs evolve
-- Supports MCP integration through event serialization
-- Minimizes risk while preserving future flexibility
+The **answers to open questions strongly support callbacks** for MVP:
 
-**Final Recommendation**: Start with event-based callbacks, design for event bus migration.
+| Question | Answer | Implication |
+|----------|--------|-------------|
+| Multiple consumers? | No (MVP) | Callbacks ✓ |
+| MCP critical? | Tool calling yes; wrapping no | Callbacks ✓ |
+| Error handling? | Fail-fast | Callbacks ✓ |
+| Plugin model? | TBD | Neutral |
+
+**Final Recommendation**: Implement event-based callbacks as specified in ADR-003, with clear migration path to event bus preserved through event-as-objects design.
+
+**Status**: ✅ Decision made and documented in architecture-initial.md (ADR-003)

@@ -432,7 +432,29 @@ for call in message["tool_calls"]:
 
 ## MCP Server Integration
 
-**MCP (Model Context Protocol)** defines a standard for tools/resources that LLMs can use. While MCP support is deferred from MVP, the invocables architecture is designed to integrate cleanly.
+**MCP (Model Context Protocol)** defines a standard for tools/resources that LLMs can use.
+
+### Important Distinction: Two Separate MCP Concerns
+
+#### 1. Calling Tools ON MCP Servers (MVP - NOT Deferred)
+
+**What**: Invoking tools that are hosted on external MCP servers
+
+**Status**: **Required for MVP** (Phase 1)
+
+**Rationale** (from stakeholder review):
+> "Calling tools on MCP servers was *not* deferred"
+
+This is part of the core invocables architecture and essential for tool/function calling functionality.
+
+#### 2. Wrapping Converser AS an MCP Server (Deferred)
+
+**What**: Exposing vibe-py-llms-converser itself as an MCP server that other tools can call
+
+**Status**: **Phase 2** (can be deferred)
+
+**Rationale** (from stakeholder review):
+> "Only wrapping the converser as an MCP server itself" is deferred. Integration with Claude Code desired but "not immediately critical for Phase 1"
 
 ### MCP Concepts
 
@@ -440,16 +462,22 @@ for call in message["tool_calls"]:
 - **Resources**: Data sources that LLMs can read (file systems, databases, APIs)
 - **Prompts**: Pre-defined prompt templates
 
-### Integration Strategy
+### Integration Strategy for Calling MCP Tools
 
-**Phase 1 (MVP)**: Built-in invokers only
+**Phase 1 (MVP)**: MCP server tool discovery and invocation
+
 ```python
-# Hardcoded invokers registered in code
-@register_invoker(name="read_file", ...)
-async def read_file(...): ...
+# Connect to MCP server and discover tools
+mcp_client = MCPClient("stdio://weather-server")
+tools = await mcp_client.list_tools()
+
+# Create invokers from MCP tools
+for tool in tools:
+    invoker = create_invoker_from_mcp_tool(tool, mcp_client)
+    io_ensemble.register(invoker)
 ```
 
-**Phase 2**: MCP server discovery
+**Phase 2**: Advanced MCP features (resources, prompts, wrapping as server)
 ```python
 # Discover tools from MCP servers
 mcp_client = MCPClient("stdio://weather-server")
@@ -717,13 +745,14 @@ Assistant: "I couldn't find the file /data/missing.txt. Could you verify the pat
 3. Invocation/Result canisters
 4. Configuration loading from TOML
 5. Basic error handling
+6. **MCP server tool discovery and invocation** (calling tools ON MCP servers)
 
 **Phase 2**:
-1. MCP server discovery and integration
-2. Additional providers (OpenAI, Ollama/VLLM)
-3. Advanced deduplication strategies
-4. Tool result caching
-5. Permission/sandbox system for tools
+1. Additional providers (OpenAI, Ollama/VLLM)
+2. Advanced deduplication strategies
+3. Tool result caching
+4. Permission/sandbox system for tools
+5. **Wrapping converser AS an MCP server** (exposing converser to other tools)
 
 ## References
 

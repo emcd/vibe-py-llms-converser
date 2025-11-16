@@ -454,14 +454,23 @@ forked_conv = conversation.fork(from_index=5)
 **Status**: **ACCEPTED**
 
 **Decision**: Use JSONL for message history, TOML for metadata
-- JSONL: One message per line for streaming/incremental writes
+- JSONL: One message per line for persistent conversation storage
+  - Enables incremental append operations when saving conversations to disk
+  - Improves readability (can read/grep individual messages)
+  - **Note**: JSONL is for storage format, not for streaming LLM responses during conversation
 - TOML: Human-readable conversation metadata (name, created, tags, etc.)
 - TOML: Provider configuration
 
 **Rationale**:
-- Improves readability and navigability over single JSON
+- JSONL improves navigability over single JSON file for stored conversations
+- Each message is a separate line, making it easy to append new messages
 - Maintains human-readable configuration for metadata
 - Universal tooling support for both formats
+
+**Clarification**: JSONL storage format is separate from LLM response streaming. During active conversation:
+- LLM responses stream via provider API (SSE, websockets, etc.)
+- In-memory conversation state maintained
+- Periodic or on-demand persistence to JSONL file
 
 **Alternatives Considered**:
 - Single JSON (less navigable, harder to read large conversations)
@@ -470,13 +479,34 @@ forked_conv = conversation.fork(from_index=5)
 
 ### ADR-002: Provider Plugin System
 
-**Status**: Proposed
+**Status**: **ACCEPTED**
 
 **Decision**: Start with hardcoded providers, design for plugin architecture
-- Phase 1: Anthropic, Ollama/VLLM, OpenAI (both APIs) built-in
-- Future: Entry point-based plugin discovery
+- **Phase 1 (MVP)**: Four providers built directly into the codebase
+  - Anthropic (primary provider)
+  - Ollama or VLLM (with server forking if necessary)
+  - OpenAI Conversations API (legacy)
+  - OpenAI Responses API (new)
+- **Phase 2**: Entry point-based plugin discovery for third-party providers
 
-**Rationale**: Avoid premature abstraction while MVP proves architecture
+**Rationale**:
+1. **Avoid premature abstraction**: Plugin architecture adds complexity that isn't justified until we have external provider implementations
+2. **Prove the architecture**: MVP should validate the Provider/Client/Processor abstraction with real implementations
+3. **Clear requirements**: Built-in providers establish the protocol contracts that plugins must satisfy
+4. **Faster iteration**: Changes to provider interface easier without external plugin compatibility concerns
+
+**Migration Path**:
+- Phase 1 providers serve as reference implementations
+- Provider/Client/Processor protocols designed to be plugin-compatible from day one
+- Entry point discovery can be added without breaking existing code
+- Built-in providers remain available even after plugin system added
+
+**Plugin Discovery (Future)**:
+```python
+# Entry point-based discovery via setup.py/pyproject.toml
+[project.entry-points."vibe_llms.providers"]
+my_provider = "my_package.provider:MyProvider"
+```
 
 ### ADR-003: Callback vs Event Bus
 
