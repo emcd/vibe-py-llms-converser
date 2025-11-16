@@ -212,12 +212,16 @@ class ConversationProgressEvent:
     chunk: str
     total_tokens: int | None = None
 
-# Callbacks accept events
+# Option 1: Multiple typed callbacks (ai-experiments pattern)
 class ConversationReactors:
     on_start: Callable[[ConversationStartedEvent], None]
     on_progress: Callable[[ConversationProgressEvent], None]
     on_complete: Callable[[ConversationCompletedEvent], None]
     on_error: Callable[[ConversationFailedEvent], None]
+
+# Option 2: Single callback with event type dispatch
+class ConversationReactors:
+    on_event: Callable[[Event], None]  # Single callback receives all events
 
 # Implementation can dispatch to bus internally
 class Conversation:
@@ -234,13 +238,207 @@ class Conversation:
             self.event_bus.publish(event)
 ```
 
-### Benefits
+### Callback Design Variations
+
+#### Variation 1: Multiple Typed Callbacks (ai-experiments pattern)
+
+**Structure**:
+```python
+class ConversationReactors:
+    allocator: Callable[[ConversationStartedEvent], None]
+    progress: Callable[[ConversationProgressEvent], None]
+    success: Callable[[ConversationCompletedEvent], None]
+    failure: Callable[[ConversationFailedEvent], None]
+    updater: Callable[[ConversationUpdatedEvent], None]
+    deallocator: Callable[[ConversationEndedEvent], None]
+```
+
+**Pros**:
+- ✅ Type-safe: Each callback has specific event type signature
+- ✅ Optional callbacks: Can provide None for unneeded callbacks
+- ✅ Clear intent: Callback name indicates when it's invoked
+- ✅ Familiar: Matches ai-experiments proven pattern
+
+**Cons**:
+- ❌ Verbose: Must define/pass 6 separate callbacks
+- ❌ Boilerplate: Often want same handler for multiple events
+- ❌ Harder to add events: New event types require protocol changes
+
+**Usage**:
+```python
+def on_progress(event: ConversationProgressEvent) -> None:
+    print(f"Progress: {event.chunk}")
+
+def on_error(event: ConversationFailedEvent) -> None:
+    print(f"Error: {event.error}")
+
+reactors = ConversationReactors(
+    allocator=None,  # Don't care about start
+    progress=on_progress,
+    success=None,
+    failure=on_error,
+    updater=None,
+    deallocator=None,
+)
+```
+
+#### Variation 2: Single Callback with Event Type Dispatch
+
+**Stakeholder proposal** (from review):
+> "A variation on the hybrid approach where we would have a single callback which would dispatch based on the event types that it received."
+
+**Structure**:
+```python
+class ConversationReactors:
+    on_event: Callable[[Event], None]  # Single callback receives all events
+
+# User implements dispatch
+def event_handler(event: Event) -> None:
+    match event:
+        case ConversationProgressEvent():
+            print(f"Progress: {event.chunk}")
+        case ConversationFailedEvent():
+            print(f"Error: {event.error}")
+        case ConversationCompletedEvent():
+            print("Done!")
+        case _:
+            pass  # Ignore other events
+```
+
+**Pros**:
+- ✅ Simple interface: Only one callback to provide
+- ✅ Flexible dispatch: User controls which events to handle
+- ✅ Easy to extend: New event types don't change interface
+- ✅ Natural event bus bridge: Already dispatching on type
+- ✅ Pattern matching: Clean with Python 3.10+ match/case
+
+**Cons**:
+- ❌ Less type-safe: Single Event parameter loses specific typing
+- ❌ Manual dispatch: User must implement switching logic
+- ❌ All or nothing: Can't easily skip callback if not interested
+
+**Usage with match/case**:
+```python
+def handle_conversation_events(event: Event) -> None:
+    match event:
+        case ConversationProgressEvent(chunk=chunk):
+            update_ui_progress(chunk)
+        case ConversationFailedEvent(error=error):
+            show_error_dialog(error)
+            rollback_state()
+        case ConversationCompletedEvent():
+            finalize_conversation()
+        case _:
+            pass  # Ignore events we don't care about
+
+conversation = Conversation(ConversationReactors(
+    on_event=handle_conversation_events
+))
+```
+
+**Usage with isinstance**:
+```python
+def handle_conversation_events(event: Event) -> None:
+    if isinstance(event, ConversationProgressEvent):
+        update_ui_progress(event.chunk)
+    elif isinstance(event, ConversationFailedEvent):
+        show_error_dialog(event.error)
+        rollback_state()
+    elif isinstance(event, ConversationCompletedEvent):
+        finalize_conversation()
+    # Implicitly ignore other events
+```
+
+**Helper for selective handling**:
+```python
+class EventDispatcher:
+    """Helper to register handlers for specific event types."""
+
+    def __init__(self):
+        self._handlers: dict[type, list[Callable]] = {}
+
+    def register(self, event_type: type, handler: Callable) -> None:
+        if event_type not in self._handlers:
+            self._handlers[event_type] = []
+        self._handlers[event_type].append(handler)
+
+    def dispatch(self, event: Event) -> None:
+        for handler in self._handlers.get(type(event), []):
+            handler(event)
+
+# Usage
+dispatcher = EventDispatcher()
+dispatcher.register(ConversationProgressEvent, lambda e: print(e.chunk))
+dispatcher.register(ConversationFailedEvent, lambda e: rollback(e.error))
+
+conversation = Conversation(ConversationReactors(
+    on_event=dispatcher.dispatch
+))
+```
+
+#### Variation 3: Hybrid of Both
+
+Provide both interfaces for flexibility:
+
+```python
+class ConversationReactors:
+    # Option 1: Typed callbacks (backwards compatible)
+    allocator: Callable[[ConversationStartedEvent], None] | None = None
+    progress: Callable[[ConversationProgressEvent], None] | None = None
+    success: Callable[[ConversationCompletedEvent], None] | None = None
+    failure: Callable[[ConversationFailedEvent], None] | None = None
+
+    # Option 2: Single dispatcher (new style)
+    on_event: Callable[[Event], None] | None = None
+
+# Implementation invokes both
+def _emit(self, event: Event) -> None:
+    # Invoke specific callback if provided
+    if isinstance(event, ConversationProgressEvent) and self.reactors.progress:
+        self.reactors.progress(event)
+    # ... handle other event types
+
+    # Also invoke generic dispatcher if provided
+    if self.reactors.on_event:
+        self.reactors.on_event(event)
+```
+
+**Pros**:
+- ✅ Maximum flexibility: Users choose their preferred style
+- ✅ Backwards compatible: Existing code using typed callbacks still works
+- ✅ Progressive enhancement: Can use both simultaneously
+
+**Cons**:
+- ❌ More complex implementation
+- ❌ Two ways to do the same thing (violates "one obvious way")
+
+### Recommendation
+
+**For MVP**: **Variation 1** (Multiple Typed Callbacks)
+
+**Rationale**:
+1. **Proven**: Matches ai-experiments pattern (2.5 years production)
+2. **Type-safe**: Compiler catches callback signature errors
+3. **Familiar**: Team knows this pattern already
+4. **Simple migration**: Can add Variation 2 later without breaking existing code
+
+**Post-MVP**: Consider adding **Variation 2** (Single Callback Dispatch)
+
+**When to add**:
+- User feedback indicates desire for simpler callback interface
+- Pattern matching (Python 3.10+) becomes baseline
+- Event bus migration is imminent (single callback is closer to bus model)
+
+**Migration path**: Both variations can coexist (Variation 3) if needed
+
+### Benefits of Event-Based Callbacks
 
 1. **Events as First-Class Objects**: Events are serializable, loggable, testable
 2. **Clean Migration Path**: Can add event bus later without changing event definitions
 3. **Callback Simplicity**: Still have direct invocation and clear error propagation
 4. **Future Flexibility**: Events can be published to bus when multiple consumers needed
 5. **MCP Compatibility**: Events can be serialized and sent to MCP servers
+6. **Dispatch flexibility**: Single callback variation available if desired
 
 ### Migration Strategy
 
