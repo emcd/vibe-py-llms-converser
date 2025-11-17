@@ -845,17 +845,33 @@ However, potential future needs if wrapping with TUI/GUI interfaces.
 
 ### Question 3: Plugin/Extension Model
 
-**Answer**: **Needs clarification**
+**Answer**: **Extensions can define new event types, but consumers ignore until support added**
 
-**Stakeholder question**:
-> "Is this about adding event types via extensions?"
+**Stakeholder clarification**:
+> "Extensions could define new event types but I would expect them to be ignored by consumers until support is implemented in the consumers."
 
-**Current understanding**: This question relates to whether plugins would need to:
-- Add new event types dynamically (suggests event bus)
-- Subscribe to existing events (can work with either approach)
-- Extend core functionality through callbacks (callbacks sufficient)
+**Implications**:
+- Extensions CAN add new event types
+- Existing consumers won't break (they ignore unknown events)
+- Consumers opt-in to new events when ready
+- Forward-compatible design needed
 
-**Decision pending**: Awaiting clarification on extension requirements
+**Decision Impact**: This actually supports **single callback with pattern matching**:
+```python
+def handle_events(event: MessageEvent) -> None:
+    match event:
+        case MessageProgressEvent():
+            # Handle known event
+            ...
+        case SomePluginEvent():  # New event from extension
+            # Consumer can choose to handle or ignore
+            ...
+        case _:
+            # Unknown events silently ignored
+            pass
+```
+
+With single callback, consumers naturally ignore events they don't recognize.
 
 ### Question 4: Error Handling Philosophy
 

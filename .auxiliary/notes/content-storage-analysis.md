@@ -330,13 +330,14 @@ system_prompt_id = hash_content(system_prompt)
    **Recommendation**: Profile before optimizing - don't assume I/O is the bottleneck
 
 2. **How common is conversation forking in practice?**
-   - If rare, no benefit from hash storage
-   - If common, significant space savings
+   - **Stakeholder observation**: "Forking has been rare. It is a feature that I thought I would use more than I actually did."
+   - **Implication**: Deduplication benefits are minimal in practice
+   - **Decision impact**: Supports inline storage for most content
 
 3. **What is the typical size distribution of messages?**
-   - Mostly small → inline better
-   - Mix of small and large → hybrid better
-   - Mostly large → hash storage better
+   - **Stakeholder observation**: "User prompts tend to be small. Tool call results vary greatly in size. Similarly, assistant responses vary greatly in size."
+   - **Implication**: Hybrid approach makes sense - small inline, large hash-based
+   - Tool call results and assistant responses are the candidates for hash storage
 
 4. **Is content shared across conversations (not forks)?**
    - System prompts: yes
