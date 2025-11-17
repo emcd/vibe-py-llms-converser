@@ -20,12 +20,12 @@
 
 ```python
 class ConversationReactors:
-    allocator: Callable      # Pre-conversation setup
+    allocator: Callable      # Message cell allocation (GUI allocates new message cell when response starts)
     deallocator: Callable    # Post-conversation cleanup
     failure: Callable        # Error handling
     success: Callable        # Successful completion
-    progress: Callable       # Streaming updates
-    updater: Callable        # State changes
+    progress: Callable       # Streaming updates (initial chunks)
+    updater: Callable        # Message updates as content streams in
 ```
 
 ### Characteristics
@@ -238,6 +238,50 @@ class Conversation:
             self.event_bus.publish(event)
 ```
 
+**Stakeholder clarification on hybrid approach** (from review):
+> "Technically, callbacks can feed events to multiple consumers. I.e., we can have a message bus on the side of the initial caller with the provider implementation being completely unaware of it."
+
+**Key insight**: The message bus can be on the **caller side**, not the provider side:
+
+```python
+# Provider remains unaware of event bus - just invokes callbacks
+class Provider:
+    def __init__(self, reactors: ConversationReactors):
+        self.reactors = reactors
+
+    def _emit_progress(self, event: ConversationProgressEvent) -> None:
+        # Simple callback invocation
+        self.reactors.on_progress(event)
+
+# Caller bridges callbacks to event bus
+class EventBridgeReactors:
+    """Bridge callbacks to event bus on caller side."""
+
+    def __init__(self, event_bus: EventBus):
+        self.event_bus = event_bus
+
+    def on_progress(self, event: ConversationProgressEvent) -> None:
+        # Callback publishes to bus
+        self.event_bus.publish(event)
+
+    def on_error(self, event: ConversationFailedEvent) -> None:
+        self.event_bus.publish(event)
+
+# Usage: Provider is unaware of bus, caller manages event distribution
+bus = EventBus()
+bus.subscribe(ConversationProgressEvent, log_handler)
+bus.subscribe(ConversationProgressEvent, ui_handler)
+bus.subscribe(ConversationProgressEvent, metrics_handler)
+
+provider = Provider(EventBridgeReactors(bus))  # Bridge callbacks to bus
+```
+
+**Benefits**:
+- Provider implementation stays simple (direct callbacks)
+- Caller has full control over event distribution
+- No provider changes needed to support multiple consumers
+- Bus complexity isolated to caller side
+
 ### Callback Design Variations
 
 #### Variation 1: Multiple Typed Callbacks (ai-experiments pattern)
@@ -252,6 +296,21 @@ class ConversationReactors:
     updater: Callable[[ConversationUpdatedEvent], None]
     deallocator: Callable[[ConversationEndedEvent], None]
 ```
+
+**Callback Purposes** (from ai-experiments):
+
+- **allocator**: Message allocator, not pre-conversation setup
+  - Provider calls back to GUI to allocate new message cell when response starts
+  - Example: GUI creates new message widget in the conversation view
+- **updater**: Message content updates during streaming
+  - Provider calls back to update message cell as more content streams in
+  - Example: GUI appends streaming chunks to message widget
+- **progress**: Initial streaming updates (first chunks)
+- **success/failure**: Final conversation state
+- **deallocator**: Cleanup after conversation completes
+
+**Stakeholder clarification** (from review):
+> "allocator is actually a message allocator and not pre-conversation setup. In ai-experiments, this is used by the provider to callback to the GUI to allocate a new message cell when a response starts to come back. Then the updater callback is used to update the message as more content is streamed in."
 
 **Pros**:
 - ✅ Type-safe: Each callback has specific event type signature
@@ -287,23 +346,49 @@ reactors = ConversationReactors(
 **Stakeholder proposal** (from review):
 > "A variation on the hybrid approach where we would have a single callback which would dispatch based on the event types that it received."
 
+**CRITICAL CLARIFICATION** (from review):
+> "Also *to be clear*, my proposal did not mean to use a single event type. I meant a single event base class. We would still pass instances of its subclasses and dispatch on those types."
+
+**Key insight**: Single callback takes **Event base class** parameter, receives **subclass instances**, dispatches on concrete types:
+
+```python
+# Event hierarchy (base class with subclasses)
+class Event(Protocol):
+    conversation_id: str
+    timestamp: datetime
+
+class ConversationProgressEvent(Event): ...  # Subclass
+class ConversationFailedEvent(Event): ...    # Subclass
+class ConversationCompletedEvent(Event): ... # Subclass
+```
+
 **Structure**:
 ```python
 class ConversationReactors:
-    on_event: Callable[[Event], None]  # Single callback receives all events
+    on_event: Callable[[Event], None]  # Single callback, Event BASE CLASS parameter
 
-# User implements dispatch
-def event_handler(event: Event) -> None:
+# Provider passes subclass instances
+def _emit_progress(event: ConversationProgressEvent) -> None:
+    self.reactors.on_event(event)  # Pass subclass instance
+
+# User implements dispatch on subclass types
+def event_handler(event: Event) -> None:  # Receives base class, dispatches on subclass
     match event:
-        case ConversationProgressEvent():
+        case ConversationProgressEvent():  # Pattern matches subclass
             print(f"Progress: {event.chunk}")
-        case ConversationFailedEvent():
+        case ConversationFailedEvent():    # Pattern matches subclass
             print(f"Error: {event.error}")
-        case ConversationCompletedEvent():
+        case ConversationCompletedEvent(): # Pattern matches subclass
             print("Done!")
         case _:
-            pass  # Ignore other events
+            pass  # Ignore other event subclasses
 ```
+
+**Benefits of this approach**:
+- ✅ Single callback interface (simple)
+- ✅ Multiple event types via inheritance (extensible)
+- ✅ Type dispatch on concrete subclasses (flexible)
+- ✅ New event subclasses don't break interface (forward compatible)
 
 **Pros**:
 - ✅ Simple interface: Only one callback to provide
@@ -562,6 +647,30 @@ class TypedEventBus:
 
 MCP (Model Context Protocol) servers introduce a distributed component where events may need to cross process boundaries.
 
+**Stakeholder clarification on MCP architecture** (from review):
+> "I suspect that each MCP server will be a separate process with a separate provider that it is using. So, I am not sure that an event bus bus that is shared across processes is necessary."
+
+**Key insight**: MCP servers are likely **separate processes**, each with their own provider instance:
+
+```
+Process 1: Main application
+├── Provider A (for Conversation 1)
+└── Provider B (for Conversation 2)
+
+Process 2: MCP Server 1
+└── Provider C (serving MCP requests)
+
+Process 3: MCP Server 2
+└── Provider D (serving MCP requests)
+```
+
+**Implication**: Shared in-process event bus may not be useful for MCP integration, since:
+- Each process has independent memory space
+- Event bus would need IPC (inter-process communication) to share events
+- Complexity of distributed event bus may outweigh benefits
+
+**Alternative**: Each provider uses callbacks independently, MCP transport handles cross-process communication
+
 ### With Callbacks
 
 ```python
@@ -576,6 +685,11 @@ class MCPConversationReactors:
 - Callbacks are synchronous; MCP is async
 - Need to marshal callback invocations to RPC calls
 - Error handling becomes complex (RPC failures)
+
+**Benefits** (in separate-process MCP context):
+- Each process is independent with simple callbacks
+- No need for distributed event bus infrastructure
+- MCP protocol handles cross-process communication
 
 ### With Event Bus
 
@@ -594,12 +708,16 @@ class MCPEventPublisher:
 bus.subscribe(ConversationProgressEvent, mcp_publisher.publish_event)
 ```
 
-**Benefits**:
+**Benefits** (if MCP servers were in-process):
 - Events decouple MCP from core conversation logic
 - Multiple MCP servers can subscribe independently
 - Failures in one MCP server don't affect others
 
-**Verdict**: Event bus has significant advantages for MCP integration, but we can bridge callbacks to events for MCP servers during MVP.
+**Challenges** (with separate-process MCP):
+- Would require distributed event bus (complex)
+- Or each process has its own bus (no sharing benefit)
+
+**Verdict**: For separate-process MCP servers, callbacks work well within each process. MCP protocol handles cross-process communication. Shared event bus adds complexity without clear benefit in this architecture.
 
 ## Decision Matrix
 

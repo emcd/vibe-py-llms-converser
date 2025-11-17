@@ -488,71 +488,116 @@ forked_conv = conversation.fork(from_index=5)
 
 **Status**: **ACCEPTED**
 
-**Decision**: **Virtual plugin architecture from day one** - even built-in providers are loaded through plugin system
+**Decision**: **Config-driven virtual plugin architecture from day one** - even built-in providers are loaded through plugin system
 
 **Stakeholder requirement** (from review):
 > "We want a plugin architecture from the beginning, but it can initially be 'virtual' in the sense that it loads 'plugins' that ship with the library."
 
-**Implementation**:
+**Implementation Pattern**: Use librovore-style config-driven dynamic loading (NOT entry points)
 
-- **Plugin system architecture from start**: All providers (built-in and external) discovered through same mechanism
-- **Built-in providers as "shipped plugins"**:
-  - Anthropic (primary provider)
-  - Ollama or VLLM (with server forking if necessary)
-  - OpenAI Conversations API (legacy)
-  - OpenAI Responses API (new)
-- **Entry point-based discovery**: Even for built-in providers
+**Built-in providers as "shipped plugins"**:
+- Anthropic (primary provider)
+- Ollama or VLLM (with server forking if necessary)
+- OpenAI Conversations API (legacy)
+- OpenAI Responses API (new)
 
 **Architecture**:
 
 ```python
-# pyproject.toml - Built-in providers registered as entry points
-[project.entry-points."vibe_llms.providers"]
-anthropic = "vibe_llms.providers.anthropic:AnthropicProvider"
-ollama = "vibe_llms.providers.ollama:OllamaProvider"
-openai_conversations = "vibe_llms.providers.openai.conversations:OpenAIConversationsProvider"
-openai_responses = "vibe_llms.providers.openai.responses:OpenAIResponsesProvider"
+# Configuration-driven provider registry (TOML)
+# .vibe-llms/config.toml or similar
+[providers]
+anthropic = { module = "vibe_llms.providers.anthropic" }
+ollama = { module = "vibe_llms.providers.ollama" }
+openai_conversations = { module = "vibe_llms.providers.openai.conversations" }
+openai_responses = { module = "vibe_llms.providers.openai.responses" }
 
-# Provider discovery (same for built-in and external)
-from importlib.metadata import entry_points
+# External providers (user configuration)
+# gemini = { module = "my_gemini_plugin", package = "gemini-provider" }
 
-def discover_providers() -> dict[str, type[Provider]]:
-    """Discover all providers (built-in and external) via entry points."""
-    providers = {}
-    for ep in entry_points(group="vibe_llms.providers"):
-        providers[ep.name] = ep.load()
-    return providers
+# Dynamic provider discovery (librovore pattern)
+from importlib import import_module
+from typing import Protocol
+
+_REGISTRY: dict[str, type[Provider]] = {}
+
+def _import_provider_module(module_path: str) -> None:
+    """Import provider module which self-registers via register() function."""
+    module = import_module(module_path)
+    # Module calls register() at import time
+
+def register(name: str, provider_class: type[Provider]) -> None:
+    """Called by provider modules to self-register."""
+    _REGISTRY[name] = provider_class
+
+def discover_providers(config: dict[str, dict]) -> dict[str, type[Provider]]:
+    """
+    Discover providers from configuration.
+
+    Args:
+        config: Provider configuration dictionary from TOML
+
+    Returns:
+        Dictionary mapping provider names to Provider classes
+    """
+    for name, provider_config in config.items():
+        module_path = provider_config["module"]
+
+        # Optional: Install package if needed (external providers)
+        if package := provider_config.get("package"):
+            _ensure_package_installed(package)
+
+        # Import module (which self-registers)
+        _import_provider_module(module_path)
+
+    return _REGISTRY.copy()
+
+# Provider module pattern (each provider module)
+# vibe_llms/providers/anthropic/__init__.py
+from vibe_llms.providers.core import register
+from .client import AnthropicProvider
+
+# Self-register at module import
+register("anthropic", AnthropicProvider)
 ```
 
 **Rationale**:
 
-1. **No special cases**: Built-in providers use same loading mechanism as external plugins
-2. **Consistent architecture**: Plugin system is not bolted on later, it's foundational
-3. **Easy testing**: Can disable built-in providers by not loading their entry points
-4. **Future-proof**: Third-party plugins work identically to built-in ones
-5. **Simpler codebase**: No conditional logic for "built-in vs plugin"
+1. **Configuration-driven**: Providers defined in configuration, not code
+2. **Dynamic loading**: No pre-registration via entry points required
+3. **Self-registration**: Modules register themselves on import
+4. **Lazy installation**: External provider packages installed on-demand
+5. **No special cases**: Built-in and external providers use identical mechanism
+6. **Consistent architecture**: Plugin system is foundational, not bolted on
 
 **Benefits**:
 
 - **Uniform provider access**: `load_provider("anthropic")` works for built-in and external
 - **Extensibility**: External plugins are first-class citizens from day one
-- **Testability**: Can mock provider discovery for testing
+- **Testability**: Can mock provider discovery by providing test configuration
 - **Modularity**: Built-in providers can be moved to separate packages later
+- **No entry point pollution**: pyproject.toml stays clean
+- **Runtime flexibility**: Configuration can be changed without reinstalling packages
 
 **Example Usage**:
 
 ```python
-# Same API for built-in and external providers
-providers = discover_providers()
+# Load configuration
+config = load_provider_config()  # From TOML
+
+# Discover all configured providers
+providers = discover_providers(config["providers"])
 
 # Load built-in Anthropic provider
 anthropic = providers["anthropic"]()
 
 # Load external provider (same mechanism)
-# User adds: [project.entry-points."vibe_llms.providers"]
-#            gemini = "my_gemini_plugin:GeminiProvider"
+# User adds to config.toml:
+#   gemini = { module = "my_gemini_plugin", package = "gemini-provider" }
 gemini = providers["gemini"]()
 ```
+
+**Pattern Reference**: Based on librovore's `_importation.import_processor_module()` architecture
 
 **No Migration Needed**: Plugin system is the architecture from day one
 

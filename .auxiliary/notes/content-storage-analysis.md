@@ -115,15 +115,16 @@ conv-014: {"role": "user", "content": [{"type": "text", "content_id": question_i
 #### 2. **Loading Latency**
 
 From ai-experiments experience:
-> "There are some noticeable pauses when loading conversations"
+> "There are some noticeable pauses when loading conversations, but I am not sure if it is due to I/O or the event handler mutexes we have in the Panel GUI. Or something else...."
 
-**Potential causes**:
-1. **I/O overhead**: Opening many small files vs one larger file
-2. **Event handler mutexes**: GUI synchronization (may be primary cause)
-3. **Content directory traversal**: stat calls, directory operations
-4. **Hash computation**: If done during load (shouldn't be)
+**Multiple possible causes** (root cause uncertain):
+- **I/O overhead**: Opening many small files vs one larger file
+- **Event handler mutexes**: GUI synchronization overhead
+- **Content directory traversal**: stat calls, directory operations
+- **Hash computation**: If done during load (shouldn't be)
+- **Other factors**: Not yet identified
 
-**Question**: Which is the dominant factor?
+**Critical**: Root cause is **unknown**. Any optimization should be preceded by profiling.
 
 #### 3. **Complexity in Message Rendering**
 
@@ -322,11 +323,11 @@ system_prompt_id = hash_content(system_prompt)
 ## Open Questions
 
 1. **What is the primary cause of loading pauses in ai-experiments?**
-   - I/O (number of files)?
-   - Event handler mutexes?
-   - Other GUI overhead?
+   - Root cause is unknown
+   - Possible factors: I/O (number of files), event handler mutexes, other GUI overhead
+   - Multiple factors may contribute
 
-   **Recommendation**: Profile before optimizing
+   **Recommendation**: Profile before optimizing - don't assume I/O is the bottleneck
 
 2. **How common is conversation forking in practice?**
    - If rare, no benefit from hash storage
@@ -364,7 +365,91 @@ system_prompt_id = hash_content(system_prompt)
 
 ## Decision
 
-**Your input needed**: Should we:
+**DECIDED**: **Hybrid approach with size-based threshold** (Option C variant)
+
+**Stakeholder decision** (from review):
+> "Let's record our decision to use inline storage for text by default. Also, I agree with your hybrid approach with a size cutoff. I think this gives us the best of both worlds."
+
+**Implementation Strategy**:
+
+1. **Default: Inline text storage** for most messages
+   - Simple, fast loading
+   - No reference resolution overhead
+   - Ideal for typical short messages
+
+2. **Size-based threshold**: Switch to hash storage for large text
+   - Threshold: ~1KB (configurable)
+   - Large LLM responses benefit from deduplication
+   - Efficient for conversation forking with long responses
+
+3. **System prompts**: Always use hash storage
+   - Deduplication across conversations
+   - Typically reused multiple times
+   - Clear benefit from content addressing
+
+**Benefits of this approach**:
+- ✅ **Simplicity for common case**: Most messages stored inline
+- ✅ **Optimization where it matters**: Large content gets deduplication
+- ✅ **Space efficiency**: Forked conversations share large responses
+- ✅ **Performance**: No unnecessary I/O for small messages
+- ✅ **Best of both worlds**: Combines simplicity and efficiency
+
+**Implementation**:
+
+```python
+# Size threshold for switching to hash storage
+HASH_THRESHOLD_BYTES = 1024  # Configurable
+
+def store_text_content(text: str, is_system_prompt: bool = False) -> dict:
+    """
+    Store textual content with hybrid strategy.
+
+    Args:
+        text: Text content to store
+        is_system_prompt: Whether this is a system prompt (always hashed)
+
+    Returns:
+        Content dict with either inline text or content_id reference
+    """
+    # System prompts always use hash storage
+    if is_system_prompt or len(text.encode('utf-8')) >= HASH_THRESHOLD_BYTES:
+        # Hash storage for large text or system prompts
+        content_id = hash_content(text)
+        store_content(content_id, text)
+        return {"type": "text", "content_id": content_id}
+    else:
+        # Inline for small text
+        return {"type": "text", "text": text}
+```
+
+**Examples**:
+
+```jsonl
+# Small user message - inline
+{"role": "user", "content": [
+  {"type": "text", "text": "What is the capital of France?"}
+]}
+
+# Large assistant response - hash storage
+{"role": "assistant", "content": [
+  {"type": "text", "content_id": "a1b2c3d4..."}
+]}
+
+# System prompt - always hash storage
+{"role": "supervisor", "content": [
+  {"type": "text", "content_id": "def456..."}
+]}
+
+# Mixed content
+{"role": "user", "content": [
+  {"type": "text", "text": "What's in this image?"},
+  {"type": "image", "content_id": "789abc..."}
+]}
+```
+
+**Migration path**: Can adjust threshold based on profiling data
+
+## Previous Options Evaluated
 
 **Option A**: Inline text (MVP), migrate later if needed
 - ✅ Simple
@@ -379,9 +464,9 @@ system_prompt_id = hash_content(system_prompt)
 - ❌ More complex
 - ❌ Potentially slower loading (needs testing)
 
-**Option C**: Hybrid (hash for large text + system prompts, inline for small)
-- ✅ Best of both
-- ❌ Most complex
-- ❌ Premature optimization?
+**Option C**: Hybrid (hash for large text + system prompts, inline for small) - **SELECTED**
+- ✅ Best of both worlds
+- ✅ Optimizes where it matters
+- ⚠️ Slightly more complex (acceptable tradeoff)
 
-**Recommendation**: **Option A** for MVP, measure before optimizing. If ai-experiments profiling shows I/O is not the bottleneck, no reason to add complexity.
+**Rationale**: Since the root cause of ai-experiments latency is unknown (could be I/O, mutexes, or other factors), the hybrid approach provides optimization where beneficial (large content) while maintaining simplicity and performance for the common case (small messages).
