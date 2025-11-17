@@ -768,7 +768,7 @@ With single callback, consumers naturally ignore events they don't recognize.
 
 ### Factors Neutral/Future
 
-1. ⏸️ **Plugin/extension model** - awaiting clarification
+1. ✅ **Plugin/extension model** - resolved (extensions can define new events, consumers ignore until implemented)
 2. ⏸️ **Wrapping as MCP server** - deferred, not MVP requirement
 3. ⏸️ **TUI/GUI integration** - potential future need for multiple consumers
 
