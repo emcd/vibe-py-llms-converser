@@ -2,13 +2,15 @@
 
 **Question**: Do we need deduplication of tool calls, or is this premature optimization?
 
-## Honest Assessment
+## Honest Assessment - UPDATED with Actual Usage
 
-**TL;DR**: **Probably don't need it** for MVP. If we implement caching, make it explicit with TTL, not implicit deduplication.
+**TL;DR**: **Not needed for MVP**, but valuable to understand for future. Deduplicators are a **context management mechanism** for trimming stale tool results from conversation history.
 
-## What ai-experiments Deduplicator Actually Is
+## What ai-experiments Deduplicator Actually Does
 
-From the actual code, the Deduplicator is a protocol:
+**Reference**: https://raw.githubusercontent.com/emcd/ai-experiments/refs/heads/master/sources/aiwb/invocables/ensembles/io/deduplicators.py
+
+### Protocol Definition
 
 ```python
 class Deduplicator(Protocol):
@@ -29,233 +31,214 @@ class Deduplicator(Protocol):
         ...
 ```
 
-**Key observations**:
-1. **Protocol-based**: Multiple implementations possible
-2. **Per-tool**: Each deduplicator handles specific tool names
-3. **Name + arguments**: Deduplication based on exact match of both
-4. **Boolean check**: Just says "duplicate or not", doesn't provide cached result
+### Purpose: Context Management, Not Call Prevention
 
-**Actual implementation not shown** - just the protocol. Can't determine if it was actually useful without seeing:
-- Real implementations
-- Usage patterns
-- Whether it was actually enabled in practice
+**Stakeholder clarification**:
+> "They are a context management mechanism that I added near the beginning of this year. They allow us to trim stale function results from conversation history. For example, a newer read of a file with line numbers may replace a previous write with line numbers, which returned the updated content."
 
-## What Deduplication Might Do (Hypothesized)
+**Key insight**: Deduplicators don't prevent tool execution - they identify which **previous tool results** in conversation history can be safely removed to save tokens.
 
-### Scenario 1: Exact Match Deduplication
+### Actual Implementations from ai-experiments
 
+#### IoContentDeduplicator
+
+Handles file operations: `read`, `write_file`, `write_pieces`
+
+**Logic**:
+- Compares file locations between current and previous operations
+- If locations match, previous result can be trimmed from conversation history
+- Exception: `write_pieces` only supersedes if `return-content` is true
+
+**Example scenario**:
 ```python
-# LLM makes same call twice in one conversation
-InvocationCanister(name="get_weather", arguments={"location": "SF"})
-# ... later in same conversation ...
-InvocationCanister(name="get_weather", arguments={"location": "SF"})
+# Message 5: Write file and return content
+Assistant: [calls write_file("foo.py", "def hello(): pass")]
+Result: "File written. Content:\n1: def hello(): pass"
 
-# Deduplicator: "This is a duplicate, return cached result"
+# ... conversation continues ...
+
+# Message 12: Write same file again
+Assistant: [calls write_file("foo.py", "def hello():\n    print('hi')")]
+Result: "File written. Content:\n1: def hello():\n2:     print('hi')"
+
+# IoContentDeduplicator: Message 5's result is now STALE
+# The newer write at message 12 supersedes it
+# Can trim message 5's result from history → save ~50 tokens
 ```
 
-**Problem**: Weather might have changed! Time-sensitive data goes stale.
+**Trimming logic**: When preparing conversation for next API call, omit outdated results.
 
-### Scenario 2: Deduplication with Caching
+#### SurveyDirectoryDeduplicator
+
+Handles `list_folder` directory operations
+
+**Logic**:
+- Checks if both operations target same location
+- Verifies filter sets compatible (previous filters ⊆ current filters)
+- Ensures recursion settings equivalent or new call more inclusive
+
+**Example**:
+```python
+# Message 8: List directory
+Assistant: [calls list_folder("src/", filters=["*.py"])]
+Result: "src/main.py, src/utils.py"
+
+# Message 15: List same directory with more inclusive filters
+Assistant: [calls list_folder("src/", filters=["*.py", "*.md"])]
+Result: "src/main.py, src/utils.py, src/README.md"
+
+# SurveyDirectoryDeduplicator: Message 8's result is STALE
+# Message 15 includes everything from message 8 plus more
+# Can trim message 8's result from history
+```
+
+## Critical Tradeoff: Cache Busting vs Token Savings
+
+**Stakeholder insight**:
+> "Server-side caching with client keepalives can be cheaper as long as conversation is flowing up to some percentage of the context window size. Using deduplicators busts cache; it really only makes sense to use them when we want to bust cache because of conversation size."
+
+### The Tradeoff
+
+#### Without Deduplicators (Keep All Results)
+
+**Pros**:
+- ✅ **Server-side prompt caching works**: Anthropic/OpenAI cache repeated prefixes
+- ✅ **Cheaper**: Cache hits are ~90% cheaper than re-processing
+- ✅ **Faster**: Cached responses are quicker
+- ✅ **Simpler**: No trimming logic needed
+
+**Cons**:
+- ❌ **Token bloat**: Old results accumulate in conversation
+- ❌ **Context limits**: May hit window size with redundant data
+- ❌ **Cost at scale**: Eventually pay for processing stale results
+
+#### With Deduplicators (Trim Stale Results)
+
+**Pros**:
+- ✅ **Token savings**: Remove redundant/stale results from history
+- ✅ **Context efficiency**: More room for useful conversation
+- ✅ **Semantic clarity**: LLM sees current state, not outdated info
+
+**Cons**:
+- ❌ **Cache busting**: Modifying conversation prefix invalidates cache
+- ❌ **Higher cost**: Re-process entire modified prefix
+- ❌ **Complexity**: Need trimming logic and supersession rules
+
+### When Each Approach Wins
+
+**Keep all results (no deduplicators) when**:
+- Conversation is short (< 50% of context window)
+- Cache hit rate is high (conversation has stable prefix)
+- Tool results are small (few tokens per result)
+- Cost of cache miss > cost of extra tokens
+
+**Trim with deduplicators when**:
+- Conversation is long (approaching context window limit)
+- Many superseded results (file edits, directory listings)
+- Tool results are large (big file contents, long listings)
+- Cost of extra tokens > cost of cache miss
+
+### Practical Example
 
 ```python
-class Deduplicator:
-    def __init__(self):
-        self._cache: dict[tuple[str, str], tuple[Any, datetime]] = {}
+# Scenario: Editing a file 10 times in conversation
 
-    def get_cached_result(
+# Without deduplicators:
+# - 10 write results in history (10 × 100 tokens = 1000 tokens)
+# - But: Prompt cache works! Only pay full price once
+# - Subsequent turns: ~100 tokens (cache hit on stable prefix)
+
+# With deduplicators:
+# - Only latest write result in history (100 tokens)
+# - But: Cache busted on every trim
+# - Each turn: ~1000+ tokens (re-process modified prefix)
+
+# Winner: No deduplicators (until context window becomes issue)
+```
+
+## Recommendation for vibe-py-llms-converser
+
+**MVP**: **Skip deduplicators**
+
+**Rationale**:
+1. **Start simple**: Let server-side caching work
+2. **Monitor usage**: See if conversations approach context limits
+3. **Measure impact**: Track token costs with/without trimming
+4. **Add when needed**: If context window becomes issue
+
+**Future consideration**: Implement deduplicators when:
+- Conversations routinely exceed 50-75% of context window
+- Many file edit operations with large content returns
+- Token costs exceed cache-miss costs
+- Users report hitting context limits
+
+**Design for future**: Structure tool results to be trimmable:
+```python
+@dataclass
+class ResultCanister:
+    invocation_id: str
+    content: Content
+    timestamp: datetime
+
+    # Future: Add supersession metadata
+    supersedes: list[str] = field(default_factory=list)  # IDs of results this replaces
+```
+
+## Implementation Notes (If Needed Later)
+
+```python
+class ConversationTrimmer:
+    """Trim stale tool results from conversation history."""
+
+    def __init__(self, deduplicators: dict[str, Deduplicator]):
+        self.deduplicators = deduplicators
+
+    def trim_conversation(
         self,
-        name: str,
-        arguments: dict,
-        ttl: timedelta,
-    ) -> Any | None:
-        key = (name, json.dumps(arguments, sort_keys=True))
-        if key in self._cache:
-            result, timestamp = self._cache[key]
-            if datetime.now() - timestamp < ttl:
-                return result  # Still fresh
-        return None  # Cache miss or stale
+        canisters: list[Canister],
+    ) -> list[Canister]:
+        """Remove superseded tool results."""
 
-    def cache_result(self, name: str, arguments: dict, result: Any) -> None:
-        key = (name, json.dumps(arguments, sort_keys=True))
-        self._cache[key] = (result, datetime.now())
+        # Find all result canisters
+        results = [(i, c) for i, c in enumerate(canisters)
+                   if isinstance(c, ResultCanister)]
+
+        # Track which results to keep
+        keep = set(range(len(canisters)))
+
+        # For each result, check if later results supersede it
+        for i, result in results:
+            for j, later_result in results:
+                if j <= i:
+                    continue  # Only check later results
+
+                # Find deduplicator for this tool
+                dedup = self.deduplicators.get(result.invocation.name)
+                if not dedup:
+                    continue
+
+                # Check if later result supersedes this one
+                if dedup.is_duplicate(
+                    later_result.invocation.name,
+                    later_result.invocation.arguments,
+                ):
+                    keep.remove(i)  # Trim this result
+                    break
+
+        # Return filtered conversation
+        return [c for i, c in enumerate(canisters) if i in keep]
 ```
-
-**This is just caching with extra steps.**
-
-### Scenario 3: Preventing Redundant Calls
-
-```python
-# LLM asks for same info in rapid succession
-User: "What's the weather in SF?"
-Assistant: [calls get_weather("SF")] -> "62°F, partly cloudy"
-User: "And what about the temperature there?"
-Assistant: [wants to call get_weather("SF") again]
-
-# Deduplicator: "We just called this 10 seconds ago, use cached result"
-```
-
-**But**: LLMs with good context should see the previous result and not re-call the tool.
-
-## When Would Deduplication Help?
-
-### Legitimate Use Cases
-
-1. **LLM hallucinating duplicate calls**:
-   - LLM calls same tool twice in single turn
-   - Actually happens with streaming - might generate partial tool call, backtrack, re-generate
-   - **Better fix**: Proper streaming parsing to avoid this
-
-2. **Expensive idempotent operations**:
-   - Database schema queries (won't change mid-conversation)
-   - File metadata (mostly static)
-   - API calls with rate limits
-   - **Better fix**: Explicit caching layer with TTL
-
-3. **Result caching for forked conversations**:
-   - Fork conversation at message 10
-   - Both branches need same tool result from message 5
-   - **Better fix**: Content-addressed storage (we already have this for messages)
-
-### Problematic Cases
-
-1. **Time-sensitive data**:
-   - Weather, stock prices, system status
-   - Results go stale quickly
-   - Deduplication without TTL is wrong
-
-2. **Non-deterministic operations**:
-   - Random number generation
-   - Current timestamp
-   - Process IDs
-   - Deduplication is semantically incorrect
-
-3. **State-changing operations**:
-   - Writing files
-   - Database updates
-   - API calls with side effects
-   - Deduplication breaks idempotency assumptions
-
-## Analysis: Is This Premature Optimization?
-
-Let's think about actual LLM behavior:
-
-### Modern LLMs (2024+) with Context
-
-- **Claude Sonnet 4**: 200K context window, excellent at tracking conversation state
-- **GPT-4**: Strong context retention
-- **Gemini**: Large context windows
-
-These models can SEE previous tool results in conversation history. They rarely make redundant calls unless:
-1. They want updated information ("what's the weather NOW?")
-2. Streaming parser issues (implementation bug, not feature need)
-3. Model hallucination/confusion (rare with good prompting)
-
-### What We Actually Need
-
-Instead of implicit deduplication, we probably want:
-
-1. **Explicit result caching** (if needed):
-   ```python
-   @cache_tool_result(ttl=timedelta(minutes=5))
-   async def get_weather(location: str) -> dict:
-       # Expensive API call
-       ...
-   ```
-
-2. **Idempotency tokens** (for state-changing operations):
-   ```python
-   async def create_order(items: list, idempotency_key: str) -> dict:
-       # Prevent duplicate order creation
-       ...
-   ```
-
-3. **Content-addressed storage** (we already have):
-   - Tool results stored by hash
-   - Forked conversations share results
-   - No deduplication logic needed
-
-## Decision Matrix
-
-| Criterion | Deduplicator | Explicit Caching |
-|-----------|--------------|------------------|
-| Handles time-sensitive data | ❌ Stale results | ✅ Configurable TTL |
-| Handles non-deterministic ops | ❌ Breaks semantics | ✅ Can opt-out |
-| Implementation complexity | ⚠️ Moderate | ✅ Simple |
-| Debugging clarity | ❌ "Why didn't tool run?" | ✅ Clear cache hit/miss |
-| Configuration flexibility | ❌ Global behavior | ✅ Per-tool policy |
-| Developer understanding | ❌ Implicit magic | ✅ Explicit intent |
-
-## Recommendation
-
-**Do NOT include deduplicator in MVP** for these reasons:
-
-1. **Modern LLMs don't need it**: Large context windows mean they track previous calls
-2. **Time-sensitive data**: Most tool calls fetch current data (weather, time, status)
-3. **Explicit is better**: If caching is needed, use explicit `@cache` decorator with TTL
-4. **Content storage handles forking**: Hash-based content storage already provides result sharing
-5. **YAGNI**: We might not actually need this - wait for real-world evidence
-
-### If Deduplication Is Actually Needed Later
-
-Implement as **explicit caching layer** outside core architecture:
-
-```python
-# Optional caching middleware
-class CachedInvoker:
-    """Wrapper that caches invoker results."""
-
-    def __init__(
-        self,
-        invoker: Invoker,
-        ttl: timedelta = timedelta(minutes=5),
-    ):
-        self.invoker = invoker
-        self.ttl = ttl
-        self._cache: dict[str, tuple[Any, datetime]] = {}
-
-    async def __call__(
-        self,
-        context: Context,
-        arguments: Arguments,
-    ) -> Any:
-        cache_key = json.dumps(arguments, sort_keys=True)
-
-        # Check cache
-        if cache_key in self._cache:
-            result, timestamp = self._cache[cache_key]
-            if datetime.now() - timestamp < self.ttl:
-                logger.debug(f"Cache hit for {self.invoker.name}: {cache_key}")
-                return result
-
-        # Cache miss - call real invoker
-        result = await self.invoker(context, arguments)
-
-        # Store in cache
-        self._cache[cache_key] = (result, datetime.now())
-        return result
-
-# Opt-in per tool
-weather_invoker = CachedInvoker(
-    base_weather_invoker,
-    ttl=timedelta(minutes=5),  # Weather changes slowly
-)
-
-time_invoker = base_time_invoker  # Don't cache - always want current time
-```
-
-**Benefits of this approach**:
-- Explicit opt-in per tool
-- Configurable TTL per tool
-- Easy to debug (clear cache hit/miss logs)
-- Can be added later without architecture changes
 
 ## Conclusion
 
-Deduplicator is likely **premature optimization**. Without seeing ai-experiments usage patterns, and given modern LLM capabilities, I recommend:
+Deduplicators are a **context management optimization**, not a call prevention mechanism. They trade off:
+- **Token savings** (remove stale results)
+- vs **Cache efficiency** (stable conversation prefix)
 
-1. **Skip deduplicator in MVP**
-2. **Monitor for redundant calls** in production
-3. **Add explicit caching** if specific tools show duplicate call patterns
-4. **Use TTL-based caching**, not implicit deduplication
+For MVP: **Skip deduplicators**, rely on server-side caching. Add later if conversations grow large and token costs exceed cache-miss costs.
 
-If the user has evidence from ai-experiments that deduplication provided significant benefit, I'd love to hear about specific use cases - but without that data, I'd vote to keep things simple.
+**Key learnings**:
+1. Deduplicators trim history, don't prevent execution
+2. Cache busting is a real cost to consider
+3. Makes sense when context window becomes constraining
+4. Tool-specific supersession rules (file ops, directory listings)

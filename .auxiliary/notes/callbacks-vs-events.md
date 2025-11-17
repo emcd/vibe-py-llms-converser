@@ -5,21 +5,22 @@
 
 ## Executive Summary
 
-**Recommendation**: Start with an **enhanced callbacks architecture** that is designed for future event bus migration, with a clear migration path.
+**Recommendation**: Use **single callback with pattern matching** for message events.
 
 **Rationale**:
-- Callbacks are proven in ai-experiments (2.5 years of production use)
-- Simpler mental model and easier debugging for initial development
-- Event bus adds complexity that isn't justified until we have multiple concurrent event consumers
-- We can design callbacks to be event-bus-compatible from day one
-- Migration path is straightforward when/if needs evolve
+- Simplest interface: one function parameter vs multiple typed callbacks
+- Python 3.10+ pattern matching provides clean event dispatch
+- Extensible: new event types = new case branches, no interface changes
+- Extension-friendly: unknown events naturally ignored in `case _` branch
+- Proven callback pattern from ai-experiments, simplified
+- No wrapper class overhead
 
-## Current Architecture: ConversationReactors (ai-experiments)
+## Current Architecture: MessageReactors (ai-experiments)
 
 ### Implementation Pattern
 
 ```python
-class ConversationReactors:
+class MessageReactors:
     allocator: Callable      # Message cell allocation (GUI allocates new message cell when response starts)
     deallocator: Callable    # Post-conversation cleanup
     failure: Callable        # Error handling
@@ -206,31 +207,31 @@ Define callbacks to receive event objects instead of arbitrary arguments:
 ```python
 # Events as value objects (can be serialized)
 @dataclass
-class ConversationProgressEvent:
+class MessageProgressEvent:
     conversation_id: str
     timestamp: datetime
     chunk: str
     total_tokens: int | None = None
 
 # Option 1: Multiple typed callbacks (ai-experiments pattern)
-class ConversationReactors:
-    on_start: Callable[[ConversationStartedEvent], None]
-    on_progress: Callable[[ConversationProgressEvent], None]
-    on_complete: Callable[[ConversationCompletedEvent], None]
-    on_error: Callable[[ConversationFailedEvent], None]
+class MessageReactors:
+    on_start: Callable[[MessageStartedEvent], None]
+    on_progress: Callable[[MessageProgressEvent], None]
+    on_complete: Callable[[MessageCompletedEvent], None]
+    on_error: Callable[[MessageFailedEvent], None]
 
 # Option 2: Single callback with event type dispatch
-class ConversationReactors:
+class MessageReactors:
     on_event: Callable[[Event], None]  # Single callback receives all events
 
 # Implementation can dispatch to bus internally
 class Conversation:
-    def __init__(self, reactors: ConversationReactors):
+    def __init__(self, reactors: MessageReactors):
         self.reactors = reactors
         # Optional: also maintain an event bus
         self.event_bus: EventBus | None = None
 
-    def _emit_progress(self, event: ConversationProgressEvent) -> None:
+    def _emit_progress(self, event: MessageProgressEvent) -> None:
         # Invoke callback
         self.reactors.on_progress(event)
         # Also publish to bus if configured
@@ -246,10 +247,10 @@ class Conversation:
 ```python
 # Provider remains unaware of event bus - just invokes callbacks
 class Provider:
-    def __init__(self, reactors: ConversationReactors):
+    def __init__(self, reactors: MessageReactors):
         self.reactors = reactors
 
-    def _emit_progress(self, event: ConversationProgressEvent) -> None:
+    def _emit_progress(self, event: MessageProgressEvent) -> None:
         # Simple callback invocation
         self.reactors.on_progress(event)
 
@@ -260,18 +261,18 @@ class EventBridgeReactors:
     def __init__(self, event_bus: EventBus):
         self.event_bus = event_bus
 
-    def on_progress(self, event: ConversationProgressEvent) -> None:
+    def on_progress(self, event: MessageProgressEvent) -> None:
         # Callback publishes to bus
         self.event_bus.publish(event)
 
-    def on_error(self, event: ConversationFailedEvent) -> None:
+    def on_error(self, event: MessageFailedEvent) -> None:
         self.event_bus.publish(event)
 
 # Usage: Provider is unaware of bus, caller manages event distribution
 bus = EventBus()
-bus.subscribe(ConversationProgressEvent, log_handler)
-bus.subscribe(ConversationProgressEvent, ui_handler)
-bus.subscribe(ConversationProgressEvent, metrics_handler)
+bus.subscribe(MessageProgressEvent, log_handler)
+bus.subscribe(MessageProgressEvent, ui_handler)
+bus.subscribe(MessageProgressEvent, metrics_handler)
 
 provider = Provider(EventBridgeReactors(bus))  # Bridge callbacks to bus
 ```
@@ -288,13 +289,13 @@ provider = Provider(EventBridgeReactors(bus))  # Bridge callbacks to bus
 
 **Structure**:
 ```python
-class ConversationReactors:
-    allocator: Callable[[ConversationStartedEvent], None]
-    progress: Callable[[ConversationProgressEvent], None]
-    success: Callable[[ConversationCompletedEvent], None]
-    failure: Callable[[ConversationFailedEvent], None]
-    updater: Callable[[ConversationUpdatedEvent], None]
-    deallocator: Callable[[ConversationEndedEvent], None]
+class MessageReactors:
+    allocator: Callable[[MessageStartedEvent], None]
+    progress: Callable[[MessageProgressEvent], None]
+    success: Callable[[MessageCompletedEvent], None]
+    failure: Callable[[MessageFailedEvent], None]
+    updater: Callable[[MessageUpdatedEvent], None]
+    deallocator: Callable[[MessageEndedEvent], None]
 ```
 
 **Callback Purposes** (from ai-experiments):
@@ -325,13 +326,13 @@ class ConversationReactors:
 
 **Usage**:
 ```python
-def on_progress(event: ConversationProgressEvent) -> None:
+def on_progress(event: MessageProgressEvent) -> None:
     print(f"Progress: {event.chunk}")
 
-def on_error(event: ConversationFailedEvent) -> None:
+def on_error(event: MessageFailedEvent) -> None:
     print(f"Error: {event.error}")
 
-reactors = ConversationReactors(
+reactors = MessageReactors(
     allocator=None,  # Don't care about start
     progress=on_progress,
     success=None,
@@ -357,28 +358,28 @@ class Event(Protocol):
     conversation_id: str
     timestamp: datetime
 
-class ConversationProgressEvent(Event): ...  # Subclass
-class ConversationFailedEvent(Event): ...    # Subclass
-class ConversationCompletedEvent(Event): ... # Subclass
+class MessageProgressEvent(Event): ...  # Subclass
+class MessageFailedEvent(Event): ...    # Subclass
+class MessageCompletedEvent(Event): ... # Subclass
 ```
 
 **Structure**:
 ```python
-class ConversationReactors:
+class MessageReactors:
     on_event: Callable[[Event], None]  # Single callback, Event BASE CLASS parameter
 
 # Provider passes subclass instances
-def _emit_progress(event: ConversationProgressEvent) -> None:
+def _emit_progress(event: MessageProgressEvent) -> None:
     self.reactors.on_event(event)  # Pass subclass instance
 
 # User implements dispatch on subclass types
 def event_handler(event: Event) -> None:  # Receives base class, dispatches on subclass
     match event:
-        case ConversationProgressEvent():  # Pattern matches subclass
+        case MessageProgressEvent():  # Pattern matches subclass
             print(f"Progress: {event.chunk}")
-        case ConversationFailedEvent():    # Pattern matches subclass
+        case MessageFailedEvent():    # Pattern matches subclass
             print(f"Error: {event.error}")
-        case ConversationCompletedEvent(): # Pattern matches subclass
+        case MessageCompletedEvent(): # Pattern matches subclass
             print("Done!")
         case _:
             pass  # Ignore other event subclasses
@@ -406,17 +407,17 @@ def event_handler(event: Event) -> None:  # Receives base class, dispatches on s
 ```python
 def handle_conversation_events(event: Event) -> None:
     match event:
-        case ConversationProgressEvent(chunk=chunk):
+        case MessageProgressEvent(chunk=chunk):
             update_ui_progress(chunk)
-        case ConversationFailedEvent(error=error):
+        case MessageFailedEvent(error=error):
             show_error_dialog(error)
             rollback_state()
-        case ConversationCompletedEvent():
+        case MessageCompletedEvent():
             finalize_conversation()
         case _:
             pass  # Ignore events we don't care about
 
-conversation = Conversation(ConversationReactors(
+conversation = Conversation(MessageReactors(
     on_event=handle_conversation_events
 ))
 ```
@@ -424,12 +425,12 @@ conversation = Conversation(ConversationReactors(
 **Usage with isinstance**:
 ```python
 def handle_conversation_events(event: Event) -> None:
-    if isinstance(event, ConversationProgressEvent):
+    if isinstance(event, MessageProgressEvent):
         update_ui_progress(event.chunk)
-    elif isinstance(event, ConversationFailedEvent):
+    elif isinstance(event, MessageFailedEvent):
         show_error_dialog(event.error)
         rollback_state()
-    elif isinstance(event, ConversationCompletedEvent):
+    elif isinstance(event, MessageCompletedEvent):
         finalize_conversation()
     # Implicitly ignore other events
 ```
@@ -453,10 +454,10 @@ class EventDispatcher:
 
 # Usage
 dispatcher = EventDispatcher()
-dispatcher.register(ConversationProgressEvent, lambda e: print(e.chunk))
-dispatcher.register(ConversationFailedEvent, lambda e: rollback(e.error))
+dispatcher.register(MessageProgressEvent, lambda e: print(e.chunk))
+dispatcher.register(MessageFailedEvent, lambda e: rollback(e.error))
 
-conversation = Conversation(ConversationReactors(
+conversation = Conversation(MessageReactors(
     on_event=dispatcher.dispatch
 ))
 ```
@@ -466,12 +467,12 @@ conversation = Conversation(ConversationReactors(
 Provide both interfaces for flexibility:
 
 ```python
-class ConversationReactors:
+class MessageReactors:
     # Option 1: Typed callbacks (backwards compatible)
-    allocator: Callable[[ConversationStartedEvent], None] | None = None
-    progress: Callable[[ConversationProgressEvent], None] | None = None
-    success: Callable[[ConversationCompletedEvent], None] | None = None
-    failure: Callable[[ConversationFailedEvent], None] | None = None
+    allocator: Callable[[MessageStartedEvent], None] | None = None
+    progress: Callable[[MessageProgressEvent], None] | None = None
+    success: Callable[[MessageCompletedEvent], None] | None = None
+    failure: Callable[[MessageFailedEvent], None] | None = None
 
     # Option 2: Single dispatcher (new style)
     on_event: Callable[[Event], None] | None = None
@@ -479,7 +480,7 @@ class ConversationReactors:
 # Implementation invokes both
 def _emit(self, event: Event) -> None:
     # Invoke specific callback if provided
-    if isinstance(event, ConversationProgressEvent) and self.reactors.progress:
+    if isinstance(event, MessageProgressEvent) and self.reactors.progress:
         self.reactors.progress(event)
     # ... handle other event types
 
@@ -513,136 +514,6 @@ def _emit(self, event: Event) -> None:
 - User feedback indicates desire for simpler callback interface
 - Pattern matching (Python 3.10+) becomes baseline
 - Event bus migration is imminent (single callback is closer to bus model)
-
-**Migration path**: Both variations can coexist (Variation 3) if needed
-
-### Benefits of Event-Based Callbacks
-
-1. **Events as First-Class Objects**: Events are serializable, loggable, testable
-2. **Clean Migration Path**: Can add event bus later without changing event definitions
-3. **Callback Simplicity**: Still have direct invocation and clear error propagation
-4. **Future Flexibility**: Events can be published to bus when multiple consumers needed
-5. **MCP Compatibility**: Events can be serialized and sent to MCP servers
-6. **Dispatch flexibility**: Single callback variation available if desired
-
-### Migration Strategy
-
-**Phase 1 (MVP)**: Callbacks with event objects
-```python
-def handle_progress(event: ConversationProgressEvent) -> None:
-    print(f"Received: {event.chunk}")
-
-conversation = Conversation(ConversationReactors(
-    on_progress=handle_progress,
-    ...
-))
-```
-
-**Phase 2 (Event Bus)**: Add optional bus without breaking existing code
-```python
-# Old code still works
-conversation = Conversation(ConversationReactors(
-    on_progress=handle_progress,
-    ...
-))
-
-# New code can use bus
-bus = EventBus()
-bus.subscribe(ConversationProgressEvent, log_progress)
-bus.subscribe(ConversationProgressEvent, update_ui)
-conversation.event_bus = bus  # Opt-in to bus publishing
-```
-
-**Phase 3 (Full Event Bus)**: Deprecate callbacks in favor of bus
-```python
-bus = EventBus()
-bus.subscribe(ConversationProgressEvent, handle_progress)
-conversation = Conversation(event_bus=bus)  # No reactors needed
-```
-
-## Event Bus Implementation Options
-
-If we decide to implement an event bus, here are the options:
-
-### Option 1: Built-in Python (Simple)
-
-```python
-from collections import defaultdict
-from typing import Callable, DefaultDict
-
-class SimpleEventBus:
-    def __init__(self):
-        self._handlers: DefaultDict[type, list[Callable]] = defaultdict(list)
-
-    def subscribe(self, event_type: type, handler: Callable) -> None:
-        self._handlers[event_type].append(handler)
-
-    def publish(self, event: object) -> None:
-        for handler in self._handlers[type(event)]:
-            handler(event)
-```
-
-**Pros**: No dependencies, simple, fully typed
-**Cons**: No async support, no priority/ordering, no filtering
-
-### Option 2: PyPubSub
-
-```python
-from pypubsub import pub
-
-# Subscribe
-pub.subscribe(handler, 'conversation.progress')
-
-# Publish
-pub.sendMessage('conversation.progress', event=event_data)
-```
-
-**Pros**: Mature library, well-tested, topic-based routing
-**Cons**: String-based topics (less type-safe), synchronous only
-
-### Option 3: Asyncio Event System
-
-```python
-import asyncio
-
-class AsyncEventBus:
-    def __init__(self):
-        self._handlers: DefaultDict[type, list[Callable]] = defaultdict(list)
-
-    async def publish(self, event: object) -> None:
-        tasks = []
-        for handler in self._handlers[type(event)]:
-            if asyncio.iscoroutinefunction(handler):
-                tasks.append(handler(event))
-            else:
-                handler(event)  # Sync handlers run immediately
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-```
-
-**Pros**: Native async support, no dependencies, typed
-**Cons**: More complex, requires async/await discipline
-
-### Option 4: Custom Type-Safe Event Bus
-
-```python
-from typing import Protocol, TypeVar, Generic
-
-E = TypeVar('E', bound='Event', contravariant=True)
-
-class EventHandler(Protocol, Generic[E]):
-    def __call__(self, event: E) -> None: ...
-
-class TypedEventBus:
-    def subscribe[E](self, event_type: type[E], handler: EventHandler[E]) -> None: ...
-    def publish[E](self, event: E) -> None: ...
-```
-
-**Pros**: Fully type-safe, custom to our needs, no surprises
-**Cons**: Implementation effort, potential bugs
-
-**Recommendation**: If we go with event bus, start with Option 1 (Simple) and enhance with async support when needed.
-
 ## Considerations for MCP Server Support
 
 MCP (Model Context Protocol) servers introduce a distributed component where events may need to cross process boundaries.
@@ -675,8 +546,8 @@ Process 3: MCP Server 2
 
 ```python
 # MCP server needs to expose callbacks
-class MCPConversationReactors:
-    def on_progress(self, event: ConversationProgressEvent) -> None:
+class MCPMessageReactors:
+    def on_progress(self, event: MessageProgressEvent) -> None:
         # Serialize event and send over MCP transport
         mcp_client.notify('conversation.progress', event.to_dict())
 ```
@@ -695,7 +566,7 @@ class MCPConversationReactors:
 
 ```python
 # MCP server subscribes to events
-bus.subscribe(ConversationProgressEvent, lambda e: mcp_client.notify('conversation.progress', e))
+bus.subscribe(MessageProgressEvent, lambda e: mcp_client.notify('conversation.progress', e))
 
 # Or, MCP server can be a bus subscriber
 class MCPEventPublisher:
@@ -705,7 +576,7 @@ class MCPEventPublisher:
     async def publish_event(self, event: Event) -> None:
         await self.mcp_client.notify(event.type, event.to_dict())
 
-bus.subscribe(ConversationProgressEvent, mcp_publisher.publish_event)
+bus.subscribe(MessageProgressEvent, mcp_publisher.publish_event)
 ```
 
 **Benefits** (if MCP servers were in-process):
@@ -740,24 +611,24 @@ bus.subscribe(ConversationProgressEvent, mcp_publisher.publish_event)
 
 **Implementation**:
 1. Define all events as dataclasses with clear schemas
-2. Use ConversationReactors pattern accepting event objects
+2. Use MessageReactors pattern accepting event objects
 3. Keep direct callback invocation for simplicity
 4. Design events to be serializable (for future MCP support)
 
 **Example**:
 ```python
 @dataclass
-class ConversationProgressEvent:
+class MessageProgressEvent:
     conversation_id: str
     timestamp: datetime
     chunk: str
     metadata: dict[str, Any]
 
-class ConversationReactors:
-    allocator: Callable[[ConversationStartedEvent], None]
-    progress: Callable[[ConversationProgressEvent], None]
-    success: Callable[[ConversationCompletedEvent], None]
-    failure: Callable[[ConversationFailedEvent], Awaitable[None]]
+class MessageReactors:
+    allocator: Callable[[MessageStartedEvent], None]
+    progress: Callable[[MessageProgressEvent], None]
+    success: Callable[[MessageCompletedEvent], None]
+    failure: Callable[[MessageFailedEvent], Awaitable[None]]
 ```
 
 ### Phase 2: Optional Event Bus
@@ -772,7 +643,7 @@ class ConversationReactors:
 class Conversation:
     def __init__(
         self,
-        reactors: ConversationReactors,
+        reactors: MessageReactors,
         event_bus: EventBus | None = None,
     ):
         self.reactors = reactors
@@ -901,48 +772,107 @@ With single callback, consumers naturally ignore events they don't recognize.
 2. ⏸️ **Wrapping as MCP server** - deferred, not MVP requirement
 3. ⏸️ **TUI/GUI integration** - potential future need for multiple consumers
 
-### Recommended Approach
+### Recommended Approach - UPDATED
 
-**Hybrid: Event-Based Callbacks** (as originally recommended)
+**Single Callback with Pattern Matching** (Variation 2, simplified)
 
 **Implementation**:
-- Callbacks accept event objects (ConversationReactors pattern)
-- Events are first-class, serializable value objects
-- Optional event bus can be added later without breaking changes
+```python
+# Provider signature - just takes a function
+class Provider:
+    def __init__(self, event_handler: Callable[[MessageEvent], None]):
+        self.event_handler = event_handler
+
+    def _emit(self, event: MessageEvent) -> None:
+        self.event_handler(event)
+
+# User implements handler with pattern matching
+def handle_message_events(event: MessageEvent) -> None:
+    match event:
+        case MessageStartedEvent():
+            allocate_message_cell()
+        case MessageProgressEvent(chunk=chunk):
+            append_to_message(chunk)
+        case MessageCompletedEvent():
+            finalize_message()
+        case MessageFailedEvent(error=error):
+            show_error(error)
+            rollback_changes()
+        case _:
+            pass  # Ignore unknown events (e.g., from extensions)
+
+# Usage - no wrapper class needed
+provider = Provider(event_handler=handle_message_events)
+```
 
 **Rationale**:
-- All MVP requirements met with callbacks
-- Events-as-objects design preserves migration path
-- Fail-fast error handling works naturally
-- No overhead from unused event bus infrastructure
-- Future TUI/GUI needs can trigger event bus adoption
+1. **Simpler interface**: One function parameter vs MessageReactors with 6 fields
+2. **Python 3.10+ pattern matching**: Clean, readable event dispatch
+3. **Extensible**: New event types = new case branches, no protocol changes
+4. **Extension-friendly**: Unknown events fall through to `case _: pass`
+5. **No wrapper overhead**: Direct function call, no MessageReactors object
+6. **Forward compatible**: Can add typed callbacks later if multiple consumers needed
+
+**Event hierarchy** (Message-centric naming):
+```python
+@dataclass
+class MessageEvent(Protocol):
+    """Base class for all message events."""
+    message_id: str
+    timestamp: datetime
+
+@dataclass
+class MessageStartedEvent(MessageEvent):
+    """Message cell allocation begins."""
+
+@dataclass
+class MessageProgressEvent(MessageEvent):
+    """Message content chunk received during streaming."""
+    chunk: str
+
+@dataclass
+class MessageUpdatedEvent(MessageEvent):
+    """Message content updated."""
+    content: str
+
+@dataclass
+class MessageCompletedEvent(MessageEvent):
+    """Message fully received and finalized."""
+    final_content: str
+
+@dataclass
+class MessageFailedEvent(MessageEvent):
+    """Message generation failed."""
+    error: str
+```
 
 ## Recommended Next Steps
 
-1. ✅ **Decision Made**: Event-based callbacks (hybrid approach)
-   - Documented in ADR-003 (see architecture-initial.md)
+1. ✅ **Decision Made**: Single callback with pattern matching
+   - To be documented in ADR-003 (see architecture-initial.md)
 
-2. **Implement**: Build MVP with event-based callbacks
-   - Define event classes for all conversation lifecycle points
-   - Implement ConversationReactors with typed event parameters
+2. **Implement**: Build MVP with single event handler
+   - Define MessageEvent hierarchy with message-centric naming
+   - Provider accepts single `Callable[[MessageEvent], None]`
    - Design events for serialization (MCP compatibility)
+   - Fail-fast error handling via exceptions
 
-3. **Future Migration Trigger**: Move to event bus when:
-   - TUI/GUI wrapper needs multiple event consumers
-   - Plugin system requires runtime event subscription
-   - Distributed architecture emerges
+3. **Future Enhancement**: Add typed callbacks if needed
+   - If multiple consumers become common
+   - If explicit callback names improve clarity
+   - Can coexist with single callback approach
 
 ## Conclusion
 
-The **answers to open questions strongly support callbacks** for MVP:
+The **answers to open questions support single callback** for MVP:
 
 | Question | Answer | Implication |
 |----------|--------|-------------|
-| Multiple consumers? | No (MVP) | Callbacks ✓ |
-| MCP critical? | Tool calling yes; wrapping no | Callbacks ✓ |
-| Error handling? | Fail-fast | Callbacks ✓ |
-| Plugin model? | TBD | Neutral |
+| Multiple consumers? | No (MVP) | Single callback ✓ |
+| MCP critical? | Tool calling yes; wrapping no | Simple callbacks ✓ |
+| Error handling? | Fail-fast | Exceptions propagate naturally ✓ |
+| Extensions? | New events ignored until supported | Pattern matching `case _` ✓ |
 
-**Final Recommendation**: Implement event-based callbacks as specified in ADR-003, with clear migration path to event bus preserved through event-as-objects design.
+**Final Recommendation**: Implement single callback with pattern matching as specified in ADR-003.
 
-**Status**: ✅ Decision made and documented in architecture-initial.md (ADR-003)
+**Status**: ✅ Decision made, to be documented in architecture-initial.md (ADR-003)

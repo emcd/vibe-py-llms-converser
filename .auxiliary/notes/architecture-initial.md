@@ -185,36 +185,40 @@ Build a simpler, focused architecture for LLM conversation management with learn
 - **Efficient forking**: Only textual content duplicated; images/videos shared via reference
 - Conversation forking included (already implemented in ai-experiments, not complex)
 
-#### 4. Callback/Event System
+#### 4. Message Event Handling
 
-**Decision**: Event-based callbacks with migration path to event bus
+**Decision**: Single callback with pattern matching for message events
 
-See detailed analysis in [callbacks-vs-events.md](callbacks-vs-events.md)
+See detailed analysis in [callbacks-vs-events.md](callbacks-vs-events.md) and ADR-003
 
 ```python
-# Events as value objects (serializable)
-@dataclass
-class ConversationProgressEvent:
-    conversation_id: str
-    timestamp: datetime
-    chunk: str
-    metadata: dict[str, Any]
+# Provider signature - just takes a function
+class Provider:
+    def __init__(self, event_handler: Callable[[MessageEvent], None]):
+        self.event_handler = event_handler
 
-# Callbacks accept event objects (preserving ConversationReactors pattern)
-class ConversationReactors:
-    allocator: Callable[[ConversationStartedEvent], None]
-    progress: Callable[[ConversationProgressEvent], None]
-    success: Callable[[ConversationCompletedEvent], None]
-    failure: Callable[[ConversationFailedEvent], None]
-    updater: Callable[[ConversationUpdatedEvent], None]
-    deallocator: Callable[[ConversationEndedEvent], None]
+# User implements handler with pattern matching
+def handle_message_events(event: MessageEvent) -> None:
+    match event:
+        case MessageStartedEvent():
+            allocate_message_cell()
+        case MessageProgressEvent(chunk=chunk):
+            append_to_message(chunk)
+        case MessageCompletedEvent():
+            finalize_message()
+        case MessageFailedEvent(error=error):
+            show_error(error)
+            rollback_changes()
+        case _:
+            pass  # Ignore unknown events (e.g., from extensions)
 ```
 
 **Rationale**:
-- Maintains proven callback simplicity from ai-experiments
-- Events as first-class objects enable future event bus migration
+- Simplest interface: one function parameter
+- Python 3.10+ pattern matching for clean event dispatch
+- Extensible: new event types don't require interface changes
+- Extension-friendly: unknown events naturally ignored
 - Events are serializable for MCP integration
-- Clear migration path when multiple consumers needed
 
 #### 5. CLI Interface
 
@@ -601,16 +605,47 @@ gemini = providers["gemini"]()
 
 **No Migration Needed**: Plugin system is the architecture from day one
 
-### ADR-003: Callback vs Event Bus
+### ADR-003: Message Event Handling
 
 **Status**: **ACCEPTED**
 
-**Decision**: Event-based callbacks with migration path to event bus
-- Callbacks accept event objects (ConversationReactors pattern from ai-experiments)
+**Decision**: Single callback with pattern matching for message events
+- Provider accepts single `Callable[[MessageEvent], None]` parameter
+- User implements event handler with pattern matching
+- Events are message-centric (`MessageProgressEvent`, `MessageCompletedEvent`, etc.)
 - Events are value objects (serializable, testable)
-- Internal implementation can publish to optional event bus
 
-**Migration Path**: See detailed analysis in [callbacks-vs-events.md](callbacks-vs-events.md)
+**Implementation**:
+```python
+# Provider signature
+class Provider:
+    def __init__(self, event_handler: Callable[[MessageEvent], None]):
+        self.event_handler = event_handler
+
+# User implementation with pattern matching
+def handle_message_events(event: MessageEvent) -> None:
+    match event:
+        case MessageStartedEvent():
+            allocate_message_cell()
+        case MessageProgressEvent(chunk=chunk):
+            append_to_message(chunk)
+        case MessageCompletedEvent():
+            finalize_message()
+        case MessageFailedEvent(error=error):
+            show_error(error)
+            rollback_changes()
+        case _:
+            pass  # Ignore unknown events (e.g., from extensions)
+```
+
+**Rationale**:
+- **Simpler**: One function parameter vs multiple typed callbacks
+- **Extensible**: New event types = new case branches, no interface changes
+- **Extension-friendly**: Unknown events naturally ignored in `case _` branch
+- **Python 3.10+**: Pattern matching provides clean, readable dispatch
+- **No overhead**: Direct function call, no wrapper class needed
+
+**Detailed Analysis**: See [callbacks-vs-events.md](callbacks-vs-events.md)
 
 ### ADR-004: Function Calling in MVP
 
@@ -723,21 +758,21 @@ gemini = providers["gemini"]()
 
 ### Preserved from ai-experiments
 - All canister types (User, Assistant, Supervisor, Document, Invocation, Result)
-- ConversationReactors callback pattern (enhanced with event objects)
+- Callback pattern for message events (simplified to single callback)
 - Directory hierarchy for storage
 - All processors (Controls, Messages, Invocations, Tokenizer)
-- Ensemble abstraction for tool grouping
-- Deduplicator for tool calls
+- Ensemble abstraction for tool grouping (essential for MCP servers)
 - TOML for configuration
 
 ### Enhancements/Changes
 - JSONL for message history (instead of JSON)
-- Event objects in callbacks (migration path to event bus)
+- Single callback with pattern matching for message events
 - Full type annotations from start
 - Multimodal content designed from start (separate types per modality)
 - Streaming opt-out by default (not opt-in)
 - Conversation forking included in MVP
 - Function calling in MVP (non-negotiable)
+- Skip deduplicator for MVP (rely on server-side prompt caching)
 - Multiple provider implementations (Anthropic, Ollama/VLLM, OpenAI×2)
 
 ### Explicitly Deferred

@@ -706,12 +706,12 @@ Assistant: "I couldn't find the file /data/missing.txt. Could you verify the pat
 
 ## Summary
 
-### Key Decisions
+### Key Decisions - UPDATED
 
-✅ **Keep full invocables architecture** from ai-experiments:
-- Invoker: Wraps tools with schema validation
-- Ensemble: Groups related invokers
-- Deduplicator: Prevents redundant calls
+✅ **Keep core invocables architecture** from ai-experiments:
+- **Invoker**: Wraps tools with schema validation
+- **Ensemble**: Groups related invokers (see detailed analysis below)
+- **Deduplicator**: SKIP for MVP (see detailed analysis below)
 
 ✅ **Tool calling is MVP requirement** (non-negotiable)
 - InvocationsProcessor required from start
@@ -721,36 +721,98 @@ Assistant: "I couldn't find the file /data/missing.txt. Could you verify the pat
 ✅ **MCP support designed from start**:
 - Ensemble architecture naturally maps to MCP servers
 - Adapter pattern for MCP tools → invokers
-- Deferred to Phase 2 for implementation
+- MVP includes calling tools ON MCP servers
+- Wrapping converser AS MCP server deferred
 
 ✅ **Fail-fast error handling**:
 - User alerts on tool failures
 - GUI/TUI rollback on errors
 - Result canisters with error info
 
+### Ensemble Decision - Keep Them
+
+**Recommendation**: **Keep ensembles**
+
+**Rationale**: MCP servers ARE ensembles - collections of tools with:
+- Shared lifecycle (connect/disconnect MCP server)
+- Shared configuration (server URL, auth, timeouts)
+- Logical grouping (all weather tools, all file tools, etc.)
+- Name scoping (multiple servers can have same tool name)
+
+**Alternative considered**: Flat invoker registry with "source" tags
+- **Problem**: No place for MCP connection management
+- **Problem**: Name conflicts between MCP servers
+- **Problem**: Awkward lifecycle (how to disconnect a server?)
+
+**Minimal design**:
+```python
+@dataclass
+class Ensemble:
+    name: str  # "weather-mcp", "file-mcp", "local-tools"
+    invokers: dict[str, Invoker]
+    config: dict[str, Any] = field(default_factory=dict)  # Optional for MCP
+    connection: Any | None = None  # MCP client if applicable
+
+    async def connect(self) -> None:
+        """Initialize (e.g., connect to MCP server)."""
+
+    async def disconnect(self) -> None:
+        """Teardown (e.g., disconnect from MCP server)."""
+```
+
+**See detailed analysis**: `.auxiliary/notes/ensembles-analysis.md`
+
+### Deduplicator Decision - Skip for MVP
+
+**Recommendation**: **Skip deduplicators** for MVP
+
+**What they actually do**: Context management - trim stale tool results from conversation history to save tokens
+
+**Example**: Newer `write_file("foo.py")` supersedes older write of same file - can remove older result from history
+
+**Critical tradeoff**: **Cache busting vs token savings**
+- **Without deduplicators**: Server-side prompt caching works (~90% cheaper), but tokens accumulate
+- **With deduplicators**: Save tokens, but bust cache (re-process entire conversation)
+
+**When to skip** (MVP):
+- Conversations short (< 50-75% of context window)
+- Server-side caching more valuable than token savings
+- Simpler implementation
+
+**When to add** (future):
+- Conversations routinely approach context limits
+- Many file edit operations with large content returns
+- Token costs exceed cache-miss costs
+
+**See detailed analysis**: `.auxiliary/notes/deduplicator-analysis.md`
+
+**Reference**: https://raw.githubusercontent.com/emcd/ai-experiments/refs/heads/master/sources/aiwb/invocables/ensembles/io/deduplicators.py
+
 ### Architecture Benefits
 
 1. **Provider-agnostic**: InvocationsProcessor normalizes tool calls across providers
 2. **Declarative**: TOML configuration for invokers and ensembles
 3. **Extensible**: Easy to add new tools or MCP servers
-4. **Efficient**: Deduplication prevents redundant calls
+4. **MCP-ready**: Ensemble architecture maps naturally to MCP servers
 5. **Safe**: Schema validation and error handling
 6. **Organized**: Ensembles group related functionality
 
 ### Implementation Priority
 
 **Phase 1 (MVP)**:
-1. Invoker, Ensemble, Deduplicator core abstractions
-2. InvocationsProcessor with Anthropic provider
-3. Invocation/Result canisters
-4. Configuration loading from TOML
-5. Basic error handling
-6. **MCP server tool discovery and invocation** (calling tools ON MCP servers)
+1. **Invoker** core abstraction (wraps tools with schema)
+2. **Ensemble** for grouping and MCP lifecycle management
+3. **Skip Deduplicator** (rely on server-side caching)
+4. InvocationsProcessor with Anthropic provider
+5. Invocation/Result canisters
+6. Configuration loading from TOML
+7. Fail-fast error handling
+8. **MCP server tool discovery and invocation** (calling tools ON MCP servers)
 
 **Phase 2**:
 1. Additional providers (OpenAI, Ollama/VLLM)
-2. Advanced deduplication strategies
-3. Tool result caching
+2. **Deduplicator** (if conversations approach context limits)
+3. Tool result caching (explicit, not via deduplication)
 4. Permission/sandbox system for tools
 5. **Wrapping converser AS an MCP server** (exposing converser to other tools)
 
