@@ -1,203 +1,116 @@
-# LLM Conversation Architecture - Initial Analysis
+# LLM Conversation Architecture - Overview
 
 **Date**: 2025-11-15
-**Session**: Initial architecture review from ai-experiments project
+**Purpose**: High-level architectural overview and index to detailed design documents
 
-## Project Goals
+## Project Vision
 
-Build a simpler, focused architecture for LLM conversation management with learnings from the ai-experiments project. Core features:
+Build a simpler, focused architecture for LLM conversation management with learnings from the ai-experiments project.
+
+### Core Capabilities
 
 1. **Normalization Layer**: Unified message format across different LLM providers
 2. **Provider Abstraction**: "Nativize" normalized messages to provider-specific formats
 3. **History Management**: Simple CLI for managing conversation history
-4. **Callback/Message Bus**: Event-driven architecture for provider interactions
+4. **Message Events**: Event-driven architecture for provider interactions
+5. **Tool Calling**: Function/tool invocation with MCP server support
 
-## Architecture Review from ai-experiments
+## Architectural Principles
 
-### Core Patterns Observed
+**Learned from ai-experiments**:
+- Full type annotations from start
+- Async-first API design
+- Configuration-driven provider setup
+- Clear separation of concerns via protocols
+- Streaming opt-out by default
 
-#### 1. Message Normalization (messages/core.py)
+**New to this project**:
+- JSONL for message history (improved readability)
+- Single callback with pattern matching (simpler event handling)
+- Hybrid content storage (inline + hash-based)
+- Multimodal content designed from start
 
-**Canister Pattern**: Messages are encapsulated in role-based "canister" objects:
-- `AssistantCanister`, `UserCanister`, `DocumentCanister`, `InvocationCanister`, `ResultCanister`, `SupervisorCanister`
-- Each canister has a `role` property and can contain multiple content items
-- Content uses a polymorphic `Content` protocol (currently `TextualContent` with MIME type support)
+## Core Architecture Components
 
-**Persistence**: Bidirectional save/restore with TOML descriptors and directory-based organization
+### 1. Message Abstraction
 
-**Strengths**:
-- Clean role-based abstraction
-- MIME-type classification for content
-- Symmetric persistence operations
-
-**Decision**:
-- Keep all canister types from ai-experiments - they provide valuable semantic distinction at the persistence layer
-- Maintain directory hierarchy - proven over 2.5 years of production use and prevents directory bloat
-
-#### 2. Invocables Framework (invocables/core.py)
-
-**Key Components**:
-- `Invoker`: Wraps tool functions with schema validation
-- `Ensemble`: Groups related invokers
-- `Deduplicator`: Prevents duplicate tool calls
-- Async preparation pipeline with configuration-driven setup
-
-**Strengths**:
-- Configuration-driven, declarative approach
-- JSON Schema validation for arguments
-- Graceful error handling
-
-**Decision**:
-- Keep full ensemble abstraction - already working and useful for grouping related tools
-- Maintain deduplicator - minimal complexity for proven benefit
-- **Critical**: Must support MCP servers regardless of ensemble architecture chosen
-
-#### 3. Provider Architecture (providers/core.py, interfaces.py)
-
-**Core Abstractions**:
-- `Provider` protocol: Produces clients
-- `Client` protocol: Manages model access
-- Processor-based design for specialized handling:
-  - `ControlsProcessor`: Model parameters
-  - `MessagesProcessor`: Message conversion
-  - `InvocationsProcessor`: Tool invocations
-  - `ConversationTokenizer`: Token counting
-
-**Configuration**:
-- Descriptor-driven instantiation via `from_descriptor()`
-- Genus-based model organization
-- `ModelsIntegrator` for attribute merging with regex pattern matching
-
-**Strengths**:
-- Clean separation of concerns
-- Provider-agnostic through protocols
-- Flexible configuration system
-
-**Decision**:
-- Keep all processors from ai-experiments (ControlsProcessor, MessagesProcessor, InvocationsProcessor, ConversationTokenizer)
-- Model discovery/organization approach needs clarification (see Open Questions)
-
-#### 4. Anthropic Implementation (providers/clients/anthropic/conversers.py)
-
-**Message Conversion Strategy**:
-- Role-based dispatch via `_nativize_message()`
-- Refinement pipeline: `_refine_native_messages()` merges consecutive user messages and filters unmatched tool uses
-- Special handling for supervisor instructions → system parameters
-
-**Streaming**:
-- Dual-mode: complete (single request) vs continuous (event streaming)
-- Event-driven accumulation with per-event handlers
-- Deferred tool result matching
-
-**Provider Configuration** (attributes.toml):
-- Model pattern matching
-- Capability flags (supervisor instructions, continuous responses, function invocations)
-- Token limits and control parameters (temperature, top-k, etc.)
-
-**Strengths**:
-- Clean streaming abstraction
-- Flexible dual-mode operation
-- Well-structured configuration
-
-## Initial Architecture Proposal for vibe-py-llms-converser
-
-### Phase 1: Core Foundations (MVP)
-
-#### 1. Message Abstraction
+**Complete canister hierarchy** (preserved from ai-experiments):
 
 ```python
-# Complete canister hierarchy (preserved from ai-experiments)
-- Canister (base protocol)
-  - UserCanister
-  - AssistantCanister
-  - SupervisorCanister  # for system/supervisor instructions
-  - DocumentCanister    # for document/reference content
-  - InvocationCanister  # for tool invocations
-  - ResultCanister      # for tool results
-
-# Content model (modality-specific types)
-- Content (base protocol)
-  - TextualContent      # text with MIME type support
-  - ImageContent        # images/visual content
-  - AudioContent        # audio content (future)
-  - VideoContent        # video content (future)
+Canister (base protocol)
+├── UserCanister          # User messages
+├── AssistantCanister     # LLM responses
+├── SupervisorCanister    # System/supervisor instructions
+├── DocumentCanister      # Reference documents
+├── InvocationCanister    # Tool invocations
+└── ResultCanister        # Tool results
 ```
 
-**Rationale**:
-- All canister types preserved - they provide semantic distinction at persistence layer
-- Nomenclature maintains Latin etymology consistency (SupervisorCanister not SystemCanister)
-- Multimodal content designed from the start with separate content types per modality
-- Invocation/Result rather than ToolCall/ToolResult to maintain existing terminology
-
-#### 2. Provider Interface
-
+**Content model** (multimodal from start):
 ```python
-# Core protocols (preserved from ai-experiments)
-- Provider
-  - name: str
-  - produce_client() -> Client
-
-- Client
-  - provider: Provider
-  - access_model() -> Model
-  - survey_models() -> list[Model]
-
-# Provider-specific processors (all preserved)
-- ControlsProcessor: Model parameters
-- MessagesProcessor: normalize ↔ native conversion
-- InvocationsProcessor: Tool invocations (MVP requirement)
-- ConversationTokenizer: Token counting
+Content (base protocol)
+├── TextualContent        # Text with MIME type support
+├── ImageContent          # Images/visual content
+├── AudioContent          # Audio (future)
+└── VideoContent          # Video (future)
 ```
 
-**Rationale**: Keep proven processor architecture from ai-experiments
+**Design rationale**: [roles-vs-canisters-analysis.md](roles-vs-canisters-analysis.md)
 
-#### 3. History Management
+### 2. Provider Interface
 
+**Core protocols**:
 ```python
-# Conversation model (with branching support)
-- Conversation
-  - id: str
-  - canisters: list[Canister]
-  - metadata: ConversationMetadata  # name, created, updated, tags, etc.
-  - save() / restore()
-  - fork(from_index: int) -> Conversation  # create conversation fork
+Provider
+├── produce_client() → Client
+└── name: str
 
-# Storage (hybrid format)
-- JSONL for message history: conversations/{id}/messages.jsonl
-- TOML for metadata: conversations/{id}/metadata.toml
-- Directory hierarchy: proven ai-experiments structure for content separation
-
-# Content storage (non-textual content)
-- Separate directories with content-based IDs (hash-based)
-- Enables content sharing across forked conversations
-- Example structure:
-  - conversations/{conversation-id}/messages.jsonl       # Textual content inline
-  - conversations/{conversation-id}/metadata.toml
-  - content/{content-hash}/data                          # Actual binary content
-  - content/{content-hash}/metadata.toml                 # MIME type, size, etc.
+Client
+├── access_model() → Model
+└── survey_models() → list[Model]
 ```
 
-**Rationale**:
-- JSONL improves readability/navigability over single JSON
-- TOML for metadata maintains human-readable configuration
-- Directory hierarchy prevents bloat and separates concerns
-- **Content deduplication**: Hash-based storage allows forked conversations to reference same content
-- **Efficient forking**: Only textual content duplicated; images/videos shared via reference
-- Conversation forking included (already implemented in ai-experiments, not complex)
+**Provider processors** (all preserved from ai-experiments):
+- **ControlsProcessor**: Model parameters
+- **MessagesProcessor**: Normalize ↔ native conversion
+- **InvocationsProcessor**: Tool invocations
+- **ConversationTokenizer**: Token counting
 
-#### 4. Message Event Handling
+**MVP provider implementations**:
+- Anthropic (primary)
+- Ollama or VLLM
+- OpenAI Conversations API (legacy)
+- OpenAI Responses API (new)
 
-**Decision**: Single callback with pattern matching for message events
+### 3. Storage Architecture
 
-See detailed analysis in [callbacks-vs-events.md](callbacks-vs-events.md) and ADR-003
+**Conversation storage**:
+```
+conversations/{id}/
+├── messages.jsonl        # One message per line
+└── metadata.toml         # Name, created, tags, etc.
+```
+
+**Content storage** (hybrid approach):
+```
+content/{hash}/
+├── data                  # Binary content
+└── metadata.toml         # MIME type, size, etc.
+```
+
+**Storage strategy**:
+- **Textual content**: Inline by default (fast loading)
+- **Large text (>1KB)**: Hash storage (deduplication benefit for forks)
+- **System prompts**: Always hash storage (shared across conversations)
+- **Non-textual content**: Always hash storage
+
+**Detailed analysis**: [content-storage-analysis.md](content-storage-analysis.md)
+
+### 4. Message Events
+
+**Single callback with pattern matching**:
 
 ```python
-# Provider signature - just takes a function
-class Provider:
-    def __init__(self, event_handler: Callable[[MessageEvent], None]):
-        self.event_handler = event_handler
-
-# User implements handler with pattern matching
 def handle_message_events(event: MessageEvent) -> None:
     match event:
         case MessageStartedEvent():
@@ -210,575 +123,331 @@ def handle_message_events(event: MessageEvent) -> None:
             show_error(error)
             rollback_changes()
         case _:
-            pass  # Ignore unknown events (e.g., from extensions)
+            pass  # Ignore unknown events
 ```
 
-**Rationale**:
-- Simplest interface: one function parameter
-- Python 3.10+ pattern matching for clean event dispatch
-- Extensible: new event types don't require interface changes
-- Extension-friendly: unknown events naturally ignored
-- Events are serializable for MCP integration
+**Event hierarchy**:
+- `MessageStartedEvent` - Message allocation begins
+- `MessageProgressEvent` - Streaming chunk received
+- `MessageUpdatedEvent` - Message content updated
+- `MessageCompletedEvent` - Message finalized
+- `MessageFailedEvent` - Generation failed
 
-#### 5. CLI Interface
+**Design rationale**: [callbacks-vs-events.md](callbacks-vs-events.md)
 
-```bash
-# Basic commands
-vibe chat                      # Start new conversation
-vibe chat --continue <id>      # Continue conversation
-vibe list                      # List conversations
-vibe show <id>                 # Show conversation history
-vibe export <id>               # Export conversation
+### 5. Tool/Function Calling
 
-# Provider selection
-vibe chat --provider anthropic
-vibe chat --model claude-sonnet-4.5
-```
-
-### MVP Requirements (Phase 1)
-
-**Non-Negotiable**:
-- Tool/function calling support (InvocationsProcessor)
-- Multimodal content architecture (ImageContent from start)
-- Conversation forking
-- Full type annotations throughout codebase
-
-**Provider Implementations Required**:
-- Anthropic (primary)
-- Ollama or VLLM (with server forking if necessary)
-- OpenAI Conversations API (legacy)
-- OpenAI Responses API (new)
-
-**Deferred to Future**:
-- Google provider (models not yet proven)
-- Prompt templates/libraries
-- Cost tracking (nice-to-have)
-- Conversation import/export (backward compatibility not essential)
-- Multiple simultaneous conversations (TUI concern for later)
-
-## Decisions Made (From Review)
-
-### 1. Message Format
-**Decision**: JSONL for message history, TOML for conversation metadata and provider configuration
-- Improves readability and navigability over single JSON
-- TOML for human-readable metadata
-
-### 2. Async vs Sync API
-**Decision**: Async-first
-- Start with async API
-- Add sync wrappers later only if strong case emerges
-
-### 3. Configuration Strategy
-**Decision**: Python dataclasses for code, TOML for provider configuration and user overrides
-- Preserves ai-experiments approach
-
-### 4. Tool/Function Calling
-**Decision**: **MVP requirement** (non-negotiable)
-- Essential for usefulness
-- InvocationsProcessor required from start
-
-### 5. Streaming Strategy
-**Decision**: Streaming is **opt-out**, not opt-in
-- Provides smoother user experience by default
-- Can opt-out for specific use cases (e.g., MCP servers)
-
-### 6. Type System
-**Decision**: Full type annotations from start
-- Strong static typing with Protocols
-- Runtime validation at boundaries
-- ai-experiments lacks many annotations; this project will be fully annotated
-
-### 7. Error Handling
-**Decision**: Exception hierarchy with `__cause__` chaining
-- Normalized common errors (rate limit, auth, timeout)
-- Preserve provider-specific error details
-- Capture specific messages for debugging
-
-### 8. Architecture Elements
-**Decisions**:
-- Keep all canister types (User, Assistant, Supervisor, Document, Invocation, Result)
-- Keep directory hierarchy from ai-experiments
-- Keep full ensemble abstraction and deduplicator
-- Keep all processors (Controls, Messages, Invocations, Tokenizer)
-- Use Latin-derived nomenclature (SupervisorCanister not SystemCanister)
-- Separate content types per modality (TextualContent, ImageContent, etc.)
-
-## Architecture Clarifications
-
-### Model Discovery/Organization: Keep ModelsIntegrator
-
-**Decision**: **Preserve** the `ModelsIntegrator` with regex pattern matching and genus-based organization from ai-experiments
-
-**Rationale** (from stakeholder review):
-> "ModelsIntegrator attribute merging is valuable because when Anthropic releases new models...they can automatically inherit attributes...from their families."
-
-**How it works**:
-1. **Regex pattern matching**: Model names match patterns like `^claude-.*$`
-2. **Family-based inheritance**: New models (e.g., `claude-sonnet-5.0`) automatically inherit attributes from their family pattern
-3. **Attribute merging**: `ModelsIntegrator` merges configuration hierarchically:
-   - Base provider defaults
-   - Model family attributes (matched by regex)
-   - Specific model overrides
-
-**Example**:
-```toml
-# Provider-level defaults
-[defaults]
-temperature = 1.0
-
-# Family pattern for all Claude models
-[[models]]
-pattern = "^claude-.*$"
-max_tokens = 4096
-supports_tools = true
-
-# Specific model override
-[[models]]
-pattern = "^claude-opus-.*$"
-max_tokens = 8192  # Opus models get higher limit
-```
-
-When `claude-sonnet-5.0` is released:
-- Automatically matches `^claude-.*$` pattern
-- Inherits `max_tokens = 4096` and `supports_tools = true`
-- No configuration update needed
-
-**Benefits**:
-- **Future-proof**: New models work without configuration changes
-- **DRY**: Family attributes defined once, inherited by all matching models
-- **Flexible**: Specific models can override family defaults
-- **Maintainable**: Less configuration to maintain
-
-**Conclusion**: Keep the proven ModelsIntegrator architecture from ai-experiments
-
-### Content Storage for Non-Textual Content
-
-**Question** (from stakeholder review): How should we handle "non-textual content within messages" (images, audio, video)?
-
-**Decision**: Use **hash-based content storage** with separate directories, preserving the ai-experiments approach
-
-**Architecture**:
-
-```
-project-root/
-├── conversations/
-│   ├── conv-001/
-│   │   ├── messages.jsonl          # Conversation messages
-│   │   └── metadata.toml            # Conversation metadata
-│   └── conv-002/                    # Forked from conv-001
-│       ├── messages.jsonl
-│       └── metadata.toml
-└── content/
-    ├── a1b2c3.../                   # Content hash (SHA-256)
-    │   ├── data                     # Raw binary content
-    │   └── metadata.toml            # MIME type, size, created
-    └── d4e5f6.../
-        ├── data
-        └── metadata.toml
-```
-
-**Message storage with content references**:
-
-```jsonl
-{"role": "user", "timestamp": "2025-11-15T10:00:00Z", "content": [
-  {"type": "text", "text": "What's in this image?"},
-  {"type": "image", "content_id": "a1b2c3d4e5f6..."}
-]}
-```
-
-**Content metadata example**:
-```toml
-# content/a1b2c3d4e5f6.../metadata.toml
-[content]
-id = "a1b2c3d4e5f6..."
-mime_type = "image/png"
-size_bytes = 524288
-created = 2025-11-15T10:00:00Z
-hash_algorithm = "sha256"
-
-# Optional: name can be from upload, LLM generation, or clipboard
-# Some content has names, some doesn't (e.g., clipboard paste without name)
-name = "vacation-photo.png"  # optional field
-```
-
-**Stakeholder note** (from review):
-> "Content might have had a name that it was uploaded with or generated by the LLM with. Could also be from clipboard without a name. Would probably track optional name."
-
-**Key benefits**:
-
-1. **Deduplication**: Same image uploaded multiple times stored once
-2. **Efficient forking**: Forked conversations reference same content
-   - Original: `conv-001/messages.jsonl` → `content/a1b2c3.../data`
-   - Fork: `conv-002/messages.jsonl` → `content/a1b2c3.../data` (same ref)
-3. **Content integrity**: Hash-based IDs prevent corruption
-4. **Space efficiency**: Large binary files not duplicated
-5. **Clean separation**: Conversations contain only text + refs, content stored separately
-
-**Content lifecycle**:
-
+**Core components**:
 ```python
-# 1. User adds image to conversation
-image_data = read_image("photo.png")
-content_hash = hashlib.sha256(image_data).hexdigest()
-content_id = f"{content_hash[:16]}..."  # Truncated for brevity
+Invoker              # Wraps tool with schema validation
+├── name: str
+├── invocable: Callable
+├── arguments_schema: dict
+└── ensemble: Ensemble
 
-# 2. Store content if not already present
-content_dir = Path(f"content/{content_id}")
-if not content_dir.exists():
-    content_dir.mkdir(parents=True)
-    (content_dir / "data").write_bytes(image_data)
-    (content_dir / "metadata.toml").write_text(toml.dumps({
-        "content": {
-            "id": content_id,
-            "mime_type": "image/png",
-            "size_bytes": len(image_data),
-            "created": datetime.now().isoformat(),
-            "hash_algorithm": "sha256",
-        }
-    }))
-
-# 3. Add message with content reference
-conversation.add_canister(UserCanister(
-    content=[
-        TextualContent(text="What's in this image?"),
-        ImageContent(content_id=content_id)
-    ]
-))
-
-# 4. Forking preserves references
-forked_conv = conversation.fork(from_index=5)
-# forked_conv still references content/{content_id}/data
+Ensemble             # Groups related invokers
+├── name: str
+├── invokers: dict[str, Invoker]
+├── config: dict     # Server-level configuration
+└── connection: Any  # MCP client if applicable
 ```
 
-**Garbage collection considerations**:
+**Design decisions**:
+- **Keep ensembles**: Essential for MCP server lifecycle management
+- **Skip deduplicators** for MVP: Rely on server-side prompt caching
 
-- Content not referenced by any conversation can be removed
-- Implement reference counting or mark-and-sweep
-- Defer to future; not essential for MVP
-
-**Conclusion**: Hash-based content storage with separate directories enables efficient conversation forking while deduplicating binary content
+**Detailed analysis**:
+- [invocations.md](invocations.md) - Complete tool calling architecture
+- [ensembles-analysis.md](ensembles-analysis.md) - Ensemble justification
+- [deduplicator-analysis.md](deduplicator-analysis.md) - Deduplicator tradeoffs
 
 ## Architecture Decision Records
 
 ### ADR-001: Message Storage Format
 
-**Status**: **ACCEPTED**
+**Status**: ACCEPTED
 
-**Decision**: Use JSONL for message history, TOML for metadata
-- JSONL: One message per line for persistent conversation storage
-  - Enables incremental append operations when saving conversations to disk
-  - Improves readability (can read/grep individual messages)
-  - **Note**: JSONL is for storage format, not for streaming LLM responses during conversation
-- TOML: Human-readable conversation metadata (name, created, tags, etc.)
-- TOML: Provider configuration
+**Decision**: JSONL for message history, TOML for metadata
 
 **Rationale**:
-- JSONL improves navigability over single JSON file for stored conversations
-- Each message is a separate line, making it easy to append new messages
-- Maintains human-readable configuration for metadata
-- Universal tooling support for both formats
+- JSONL: One message per line enables incremental append, better readability
+- TOML: Human-readable metadata and configuration
+- Universal tooling support
 
-**Clarification**: JSONL storage format is separate from LLM response streaming. During active conversation:
-- LLM responses stream via provider API (SSE, websockets, etc.)
-- In-memory conversation state maintained
-- Periodic or on-demand persistence to JSONL file
-
-**Alternatives Considered**:
-- Single JSON (less navigable, harder to read large conversations)
-- SQLite (over-engineered for file-based storage)
-- All-TOML (verbose for many messages)
+**Note**: JSONL is for persistent storage, not streaming responses during active conversation.
 
 ### ADR-002: Provider Plugin System
 
-**Status**: **ACCEPTED**
+**Status**: ACCEPTED
 
-**Decision**: **Config-driven virtual plugin architecture from day one** - even built-in providers are loaded through plugin system
+**Decision**: Config-driven virtual plugin architecture from day one
 
-**Stakeholder requirement** (from review):
-> "We want a plugin architecture from the beginning, but it can initially be 'virtual' in the sense that it loads 'plugins' that ship with the library."
+**Implementation**: Librovore-style dynamic loading (NOT entry points)
 
-**Implementation Pattern**: Use librovore-style config-driven dynamic loading (NOT entry points)
-
-**Built-in providers as "shipped plugins"**:
-- Anthropic (primary provider)
-- Ollama or VLLM (with server forking if necessary)
-- OpenAI Conversations API (legacy)
-- OpenAI Responses API (new)
-
-**Architecture**:
-
-```python
-# Configuration-driven provider registry (TOML)
-# .vibe-llms/config.toml or similar
+```toml
+# Configuration-driven provider registry
 [providers]
 anthropic = { module = "vibe_llms.providers.anthropic" }
 ollama = { module = "vibe_llms.providers.ollama" }
-openai_conversations = { module = "vibe_llms.providers.openai.conversations" }
-openai_responses = { module = "vibe_llms.providers.openai.responses" }
+```
 
-# External providers (user configuration)
-# gemini = { module = "my_gemini_plugin", package = "gemini-provider" }
-
-# Dynamic provider discovery (librovore pattern)
-from importlib import import_module
-from typing import Protocol
-
-_REGISTRY: dict[str, type[Provider]] = {}
-
-def _import_provider_module(module_path: str) -> None:
-    """Import provider module which self-registers via register() function."""
-    module = import_module(module_path)
-    # Module calls register() at import time
-
-def register(name: str, provider_class: type[Provider]) -> None:
-    """Called by provider modules to self-register."""
-    _REGISTRY[name] = provider_class
-
-def discover_providers(config: dict[str, dict]) -> dict[str, type[Provider]]:
-    """
-    Discover providers from configuration.
-
-    Args:
-        config: Provider configuration dictionary from TOML
-
-    Returns:
-        Dictionary mapping provider names to Provider classes
-    """
-    for name, provider_config in config.items():
-        module_path = provider_config["module"]
-
-        # Optional: Install package if needed (external providers)
-        if package := provider_config.get("package"):
-            _ensure_package_installed(package)
-
-        # Import module (which self-registers)
-        _import_provider_module(module_path)
-
-    return _REGISTRY.copy()
-
-# Provider module pattern (each provider module)
-# vibe_llms/providers/anthropic/__init__.py
+```python
+# Self-registration pattern
 from vibe_llms.providers.core import register
 from .client import AnthropicProvider
 
-# Self-register at module import
 register("anthropic", AnthropicProvider)
 ```
 
-**Rationale**:
-
-1. **Configuration-driven**: Providers defined in configuration, not code
-2. **Dynamic loading**: No pre-registration via entry points required
-3. **Self-registration**: Modules register themselves on import
-4. **Lazy installation**: External provider packages installed on-demand
-5. **No special cases**: Built-in and external providers use identical mechanism
-6. **Consistent architecture**: Plugin system is foundational, not bolted on
-
 **Benefits**:
-
-- **Uniform provider access**: `load_provider("anthropic")` works for built-in and external
-- **Extensibility**: External plugins are first-class citizens from day one
-- **Testability**: Can mock provider discovery by providing test configuration
-- **Modularity**: Built-in providers can be moved to separate packages later
-- **No entry point pollution**: pyproject.toml stays clean
-- **Runtime flexibility**: Configuration can be changed without reinstalling packages
-
-**Example Usage**:
-
-```python
-# Load configuration
-config = load_provider_config()  # From TOML
-
-# Discover all configured providers
-providers = discover_providers(config["providers"])
-
-# Load built-in Anthropic provider
-anthropic = providers["anthropic"]()
-
-# Load external provider (same mechanism)
-# User adds to config.toml:
-#   gemini = { module = "my_gemini_plugin", package = "gemini-provider" }
-gemini = providers["gemini"]()
-```
-
-**Pattern Reference**: Based on librovore's `_importation.import_processor_module()` architecture
-
-**No Migration Needed**: Plugin system is the architecture from day one
+- No entry point pollution
+- Runtime flexibility
+- Uniform provider access (built-in and external identical)
+- Lazy installation of external providers
 
 ### ADR-003: Message Event Handling
 
-**Status**: **ACCEPTED**
+**Status**: ACCEPTED
 
-**Decision**: Single callback with pattern matching for message events
-- Provider accepts single `Callable[[MessageEvent], None]` parameter
-- User implements event handler with pattern matching
-- Events are message-centric (`MessageProgressEvent`, `MessageCompletedEvent`, etc.)
-- Events are value objects (serializable, testable)
+**Decision**: Single callback with pattern matching
 
-**Implementation**:
+**Provider signature**:
 ```python
-# Provider signature
 class Provider:
     def __init__(self, event_handler: Callable[[MessageEvent], None]):
         self.event_handler = event_handler
-
-# User implementation with pattern matching
-def handle_message_events(event: MessageEvent) -> None:
-    match event:
-        case MessageStartedEvent():
-            allocate_message_cell()
-        case MessageProgressEvent(chunk=chunk):
-            append_to_message(chunk)
-        case MessageCompletedEvent():
-            finalize_message()
-        case MessageFailedEvent(error=error):
-            show_error(error)
-            rollback_changes()
-        case _:
-            pass  # Ignore unknown events (e.g., from extensions)
 ```
 
 **Rationale**:
-- **Simpler**: One function parameter vs multiple typed callbacks
-- **Extensible**: New event types = new case branches, no interface changes
-- **Extension-friendly**: Unknown events naturally ignored in `case _` branch
-- **Python 3.10+**: Pattern matching provides clean, readable dispatch
-- **No overhead**: Direct function call, no wrapper class needed
+- Simpler interface (one parameter vs multiple callbacks)
+- Python 3.10+ pattern matching provides clean dispatch
+- Extensible (new events = new case branches)
+- Extension-friendly (unknown events ignored in `case _`)
 
-**Detailed Analysis**: See [callbacks-vs-events.md](callbacks-vs-events.md)
+**Detailed comparison**: [callbacks-vs-events.md](callbacks-vs-events.md)
 
-### ADR-004: Function Calling in MVP
+### ADR-004: Tool Calling in MVP
 
-**Status**: **ACCEPTED**
+**Status**: ACCEPTED
 
-**Decision**: Function/tool calling is **required** for MVP
-- InvocationsProcessor must be implemented from start
-- MCP server support is essential
-- Invocation/Result canisters included
+**Decision**: Tool/function calling is **required** for MVP
 
-**Rationale**: Without function calling, the tool is nearly worthless for intended use cases
+**Scope**:
+- Invoker/Ensemble architecture
+- InvocationsProcessor required from start
+- MCP server tool calling (NOT wrapping as MCP server)
+- Invocation/Result canisters
 
-### ADR-005: Multimodal Content Architecture
+**Rationale**: Without function calling, the tool is nearly worthless for intended use cases.
 
-**Status**: **ACCEPTED**
+**Details**: [invocations.md](invocations.md)
 
-**Decision**: Design for multimodal from the start with separate content types
-- TextualContent, ImageContent designed immediately
-- AudioContent, VideoContent designed but implementation deferred
-- Each modality has its own content type (not generic MultimodalContent)
+### ADR-005: Multimodal Content
 
-**Rationale**: Primary requirement for reimplementation; architectural decision cannot be retrofitted
+**Status**: ACCEPTED
 
-### ADR-006: Type Annotation Coverage
+**Decision**: Design for multimodal from start with separate content types
 
-**Status**: **ACCEPTED**
+**Implementation**:
+- `TextualContent`, `ImageContent` designed immediately
+- `AudioContent`, `VideoContent` designed but implementation deferred
+- Each modality has its own type (not generic `MultimodalContent`)
+
+**Rationale**: Architectural decision cannot be retrofitted; primary requirement for reimplementation.
+
+### ADR-006: Type Annotations
+
+**Status**: ACCEPTED
 
 **Decision**: Full type annotations required from day one
+
+**Requirements**:
 - All functions, methods, and class attributes typed
 - Strong static typing with Protocols
 - Runtime validation at boundaries
 
-**Rationale**: ai-experiments lacks many annotations; learned lesson for new codebase
+**Rationale**: ai-experiments lacks many annotations; learned lesson for new codebase.
 
-### ADR-007: Streaming Default Behavior
+### ADR-007: Streaming Default
 
-**Status**: **ACCEPTED**
+**Status**: ACCEPTED
 
 **Decision**: Streaming is opt-out, not opt-in
-- Provides smoother UX by default
-- Non-streaming mode available for specific use cases
-- CLI flag to disable streaming when needed
 
-**Rationale**: Better user experience; modern LLM interaction pattern
+**Implementation**:
+- Streaming by default for better UX
+- CLI flag to disable when needed
+- Non-streaming mode for specific use cases
 
-## Next Steps
+**Rationale**: Modern LLM interaction pattern; smoother user experience.
 
-1. **Address model discovery/organization question**
-   - Get stakeholder clarification on intended simplification
-   - Document final decision
+## Key Design Decisions
 
-2. **Create detailed module specifications**
-   - Canister hierarchy with full type signatures
-   - Content protocol specifications
-   - Processor interfaces
+### Content Storage Strategy
 
-3. **Design conversation storage schema**
-   - JSONL format specification for messages
-   - TOML metadata structure
-   - Directory hierarchy layout
+**Decision**: Hybrid approach with size-based threshold
 
-4. **Implement core abstractions**
-   - Base protocols (Canister, Content, Provider, Client)
-   - Event definitions for callbacks
-   - ConversationReactors structure
+**Implementation**:
+- Inline storage: Text < 1KB (fast loading)
+- Hash storage: Text ≥ 1KB (deduplication for forks)
+- Hash storage: Always for system prompts (shared across conversations)
+- Hash storage: Always for non-textual content (images, audio, video)
 
-5. **Prototype Anthropic provider**
-   - All four processors (Controls, Messages, Invocations, Tokenizer)
+**Benefits**:
+- Simplicity for common case (small messages)
+- Optimization where it matters (large content)
+- Space efficiency for forked conversations
+- No unnecessary I/O overhead
+
+**Analysis**: [content-storage-analysis.md](content-storage-analysis.md)
+
+### Ensemble Architecture
+
+**Decision**: Keep ensembles for MCP server lifecycle management
+
+**Key insight**: MCP servers ARE ensembles
+- Shared lifecycle (connect/disconnect)
+- Shared configuration (URL, auth, timeouts)
+- Name scoping (multiple servers can have same tool name)
+
+**Minimal design**:
+```python
+@dataclass
+class Ensemble:
+    name: str
+    invokers: dict[str, Invoker]
+    config: dict[str, Any] = field(default_factory=dict)
+    connection: Any | None = None  # MCP client if applicable
+```
+
+**Analysis**: [ensembles-analysis.md](ensembles-analysis.md)
+
+### Deduplicator Strategy
+
+**Decision**: Skip deduplicators for MVP
+
+**What they actually do**: Context management - trim stale tool results from conversation history
+
+**Critical tradeoff**: Cache-busting vs token savings
+- Without: Server-side caching works (~90% cheaper), but tokens accumulate
+- With: Save tokens, but bust cache (re-process entire conversation)
+
+**When to add** (future):
+- Conversations routinely exceed 50-75% of context window
+- Many file edit operations with large content
+- Token costs exceed cache-miss costs
+
+**Analysis**: [deduplicator-analysis.md](deduplicator-analysis.md)
+
+## MVP Requirements
+
+### Non-Negotiable
+- Tool/function calling support
+- Multimodal content architecture (ImageContent from start)
+- Conversation forking
+- Full type annotations
+
+### Required Provider Implementations
+- Anthropic (primary)
+- Ollama or VLLM (with server forking if necessary)
+- OpenAI Conversations API (legacy)
+- OpenAI Responses API (new)
+
+### Deferred to Future
+- Google provider (models not yet proven)
+- Prompt templates/libraries
+- Cost tracking (nice-to-have)
+- Conversation import/export
+- Multiple simultaneous conversations (TUI concern)
+- Wrapping converser as MCP server
+
+## Implementation Roadmap
+
+### Phase 1: Core Foundations (MVP)
+
+1. **Base Protocols**
+   - Canister hierarchy (all 6 types)
+   - Content protocol (Text, Image)
+   - Provider/Client protocols
+   - Event definitions
+
+2. **Storage Layer**
+   - JSONL message serialization
+   - TOML metadata handling
+   - Hybrid content storage (inline + hash)
+   - Conversation forking
+
+3. **Message Events**
+   - Single callback with pattern matching
+   - Event hierarchy implementation
+   - Provider event emission
+
+4. **Tool Calling**
+   - Invoker core abstraction
+   - Ensemble for grouping
+   - InvocationsProcessor
+   - MCP server tool discovery/invocation
+   - Configuration loading from TOML
+
+5. **Provider Implementation**
+   - Anthropic provider (all processors)
    - Streaming and non-streaming modes
-   - MCP server integration points
+   - Tool calling integration
 
-6. **Build MVP CLI**
-   - Chat command with streaming (opt-out)
-   - History management (list, show, branch)
-   - Configuration handling
+6. **CLI Interface**
+   - Basic commands (chat, list, show)
+   - Provider selection
+   - Conversation management
 
-7. **Implement additional providers**
-   - Ollama/VLLM
-   - OpenAI Conversations API
-   - OpenAI Responses API
+### Phase 2: Extended Features
 
-## Questions Answered (From Review)
+1. Additional providers (OpenAI, Ollama/VLLM)
+2. Deduplicators (if needed based on usage patterns)
+3. Tool result caching
+4. Permission/sandbox system for tools
+5. Wrapping converser as MCP server
+6. Conversation import/export
 
-1. ~~Should we support multiple simultaneous conversations?~~ **No, TUI concern for later**
-2. ~~Do you want conversation import/export?~~ **Deferred; eventually want ai-experiments import**
-3. ~~Should the CLI support conversation templates or saved prompts?~~ **No, not in MVP**
-4. ~~Do you want built-in support for system prompts library?~~ **No initially, can revisit**
-5. ~~How important is backwards compatibility with ai-experiments?~~ **Not important, but import capability desired eventually**
-6. ~~Should we include cost tracking?~~ **Nice-to-have, not essential for MVP**
-7. ~~Do you want to support conversation sharing/collaboration?~~ **Significantly in the future, not primary use case**
+## Detailed Design Documents
 
-## References
+### Architecture Analyses
+- **[callbacks-vs-events.md](callbacks-vs-events.md)**: Complete comparison of callback vs event bus architectures, including stakeholder feedback and final single-callback decision
+- **[content-storage-analysis.md](content-storage-analysis.md)**: Deep analysis of storage strategies with quantitative scenarios and hybrid approach justification
+- **[deduplicator-analysis.md](deduplicator-analysis.md)**: Actual ai-experiments implementation, cache-busting tradeoffs, and recommendation to skip for MVP
+- **[ensembles-analysis.md](ensembles-analysis.md)**: MCP server lifecycle requirements and ensemble architecture justification
+- **[invocations.md](invocations.md)**: Complete tool calling architecture with MCP integration, ensemble decisions, and implementation details
+- **[roles-vs-canisters-analysis.md](roles-vs-canisters-analysis.md)**: Clarification that no merge occurred - ai-experiments pattern preserved
 
+### Reference Materials
 - ai-experiments: https://github.com/emcd/ai-experiments
+- MCP Specification: https://modelcontextprotocol.io/
 - Anthropic SDK: https://github.com/anthropics/anthropic-sdk-python
 - OpenAI SDK: https://github.com/openai/openai-python
 
-## Ideas for Future Exploration
-
-1. **Conversation Analysis**: Summarization, statistics, topic extraction
-2. **Multi-Provider Routing**: Send to different providers based on task type
-3. **Caching Layer**: Avoid redundant API calls for similar prompts
-4. **Web Interface**: Optional GUI alongside CLI (current GUI in ai-experiments is more complex)
-5. **Provider Fallback**: Automatic retry with different provider on failure
-6. **Cost Tracking**: Token usage × pricing (nice-to-have)
-7. **Conversation Import**: Import from ai-experiments, OpenAI/Anthropic data dumps
-8. **TUI with Multiple Conversations**: Terminal UI with tabs/sessions support
-
-## Summary of Key Architecture Decisions
+## Summary: What We're Preserving vs Changing
 
 ### Preserved from ai-experiments
 - All canister types (User, Assistant, Supervisor, Document, Invocation, Result)
 - Callback pattern for message events (simplified to single callback)
 - Directory hierarchy for storage
 - All processors (Controls, Messages, Invocations, Tokenizer)
-- Ensemble abstraction for tool grouping (essential for MCP servers)
+- Ensemble abstraction for tool grouping
 - TOML for configuration
+- ModelsIntegrator with regex pattern matching
 
 ### Enhancements/Changes
-- JSONL for message history (instead of JSON)
-- Single callback with pattern matching for message events
+- JSONL for message history (vs JSON)
+- Single callback with pattern matching (vs multiple typed callbacks)
 - Full type annotations from start
-- Multimodal content designed from start (separate types per modality)
-- Streaming opt-out by default (not opt-in)
-- Conversation forking included in MVP
-- Function calling in MVP (non-negotiable)
-- Skip deduplicator for MVP (rely on server-side prompt caching)
-- Multiple provider implementations (Anthropic, Ollama/VLLM, OpenAI×2)
+- Multimodal content designed from start
+- Streaming opt-out by default
+- Conversation forking in MVP
+- Hybrid content storage (inline + hash)
+- Skip deduplicators for MVP (rely on caching)
 
 ### Explicitly Deferred
 - Prompt templates/libraries
 - Google provider
 - Multiple simultaneous conversations
-- Conversation import/export (for MVP)
-- Web interface
 - Cost tracking
+- Wrapping converser as MCP server
