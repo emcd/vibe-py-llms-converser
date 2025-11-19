@@ -24,8 +24,11 @@ Architectural Decision Records
 .. toctree::
    :maxdepth: 2
 
-
-.. todo:: Add architectural decision records to toctree.
+   001-event-handling-pattern
+   002-content-storage-strategy
+   003-tool-organization-with-ensembles
+   004-conversation-history-trimming
+   005-tool-calling-mvp-scope
 
 For ADR format and guidance, see the `architecture documentation guide
 <https://emcd.github.io/python-project-common/stable/sphinx-html/common/architecture.html>`_.

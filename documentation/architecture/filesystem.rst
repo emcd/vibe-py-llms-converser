@@ -98,6 +98,71 @@ Package-wide exceptions are centralized in ``sources/converser/exceptions.py``
 following the standard hierarchy patterns documented in the `common practices guide
 <https://raw.githubusercontent.com/emcd/python-project-common/refs/tags/docs-1/documentation/common/practices.rst>`_.
 
+Runtime Data Storage
+===============================================================================
+
+The application stores user data separate from the source code, following XDG
+Base Directory Specification conventions.
+
+Data Directory Organization
+-------------------------------------------------------------------------------
+
+User data is organized in standard locations:
+
+**Configuration** (``~/.config/vibe-llms-converser/`` or ``$XDG_CONFIG_HOME``):
+
+.. code-block::
+
+    ~/.config/vibe-llms-converser/
+    ├── config.toml              # Global application configuration
+    ├── providers/               # Provider-specific configurations
+    │   ├── anthropic.toml
+    │   └── ollama.toml
+    └── ensembles/               # User-defined tool ensembles
+        └── custom-tools.toml
+
+**Data** (``~/.local/share/vibe-llms-converser/`` or ``$XDG_DATA_HOME``):
+
+.. code-block::
+
+    ~/.local/share/vibe-llms-converser/
+    ├── conversations/           # Conversation storage
+    │   ├── {id}/
+    │   │   ├── messages.jsonl  # One message per line
+    │   │   └── metadata.toml    # Name, created, tags
+    │   └── {id}/
+    │       └── ...
+    └── content/                 # Content-addressed storage
+        ├── {hash}/
+        │   ├── data             # Binary or large text content
+        │   └── metadata.toml    # MIME type, size, etc.
+        └── {hash}/
+            └── ...
+
+**Conversation storage format** (see :doc:`decisions/002-content-storage-strategy`):
+
+* **messages.jsonl**: One JSON object per line, enabling line-by-line
+  processing and append operations
+* **metadata.toml**: Human-readable conversation metadata (name, creation date,
+  tags, etc.)
+
+**Content storage strategy**:
+
+* **Small text** (< 1KB): Stored inline in messages.jsonl
+* **Large text** (>= 1KB): Stored in content/{hash}/ for deduplication
+* **System prompts**: Always in content/{hash}/ (shared across conversations)
+* **Binary content**: Always in content/{hash}/ (images, audio, video)
+
+**Project-local data** (``.vibe-llms-converser/`` in current directory):
+
+.. code-block::
+
+    .vibe-llms-converser/
+    ├── config.toml              # Project-specific configuration
+    └── conversations/           # Project-local conversations
+
+This allows project-specific conversation management and configuration overrides.
+
 Architecture Evolution
 ===============================================================================
 

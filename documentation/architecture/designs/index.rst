@@ -21,8 +21,13 @@
 Designs
 *******************************************************************************
 
+Design documents describe the implementation architecture of system components.
+For architectural decisions and their rationale, see :doc:`../decisions/index`.
+
 .. toctree::
    :maxdepth: 2
 
-
-.. todo:: Add design documents to toctree.
+   message-abstraction
+   provider-abstraction
+   tool-calling
+   mcp-integration
