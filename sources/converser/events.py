@@ -18,27 +18,56 @@
 #============================================================================#
 
 
-''' Common imports used throughout the package. '''
-
-# ruff: noqa: F401
+''' Conversation lifecycle event protocols. '''
 
 
-import abc
-import collections.abc as   cabc
-import datetime
-import enum
-import hashlib
-import json
-import pathlib
-import types
+from . import __
 
-import typing_extensions as typx
-# --- BEGIN: Injected by Copier ---
-import dynadoc as           ddoc
-import frigid as            immut
-import tyro
-# --- END: Injected by Copier ---
 
-# --- BEGIN: Injected by Copier ---
-from absence import Absential, absent, is_absent
-# --- END: Injected by Copier ---
+class Event( __.immut.DataclassObject ):
+    ''' Base class for conversation events. '''
+
+    message_id: str
+
+
+class MessageAllocationEvent( Event ):
+    ''' Message allocation begins. '''
+
+    message_id: str
+
+
+class MessageProgressEvent( Event ):
+    ''' Streaming chunk received. '''
+
+    message_id: str
+    chunk: str
+
+
+class MessageUpdateEvent( Event ):
+    ''' Message content updated. '''
+
+    message_id: str
+
+
+class MessageCompletionEvent( Event ):
+    ''' Message finalized successfully. '''
+
+    message_id: str
+
+
+class MessageAbortEvent( Event ):
+    ''' Message generation failed. '''
+
+    message_id: str
+    error: str
+
+
+ConversationEvent: __.typx.TypeAlias = __.typx.Union[
+    MessageAllocationEvent,
+    MessageProgressEvent,
+    MessageUpdateEvent,
+    MessageCompletionEvent,
+    MessageAbortEvent,
+]
+
+EventHandler: __.typx.TypeAlias = __.cabc.Callable[ [ Event ], None ]

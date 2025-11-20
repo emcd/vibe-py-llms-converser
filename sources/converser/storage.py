@@ -18,27 +18,7 @@
 #============================================================================#
 
 
-''' Common imports used throughout the package. '''
-
-# ruff: noqa: F401
+''' Storage layer protocols and implementations (Phase 1.2). '''
 
 
-import abc
-import collections.abc as   cabc
-import datetime
-import enum
-import hashlib
-import json
-import pathlib
-import types
-
-import typing_extensions as typx
-# --- BEGIN: Injected by Copier ---
-import dynadoc as           ddoc
-import frigid as            immut
-import tyro
-# --- END: Injected by Copier ---
-
-# --- BEGIN: Injected by Copier ---
-from absence import Absential, absent, is_absent
-# --- END: Injected by Copier ---
+# Placeholder for Phase 1.2 implementation

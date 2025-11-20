@@ -7,19 +7,23 @@ This document tracks tactical implementation work for the current development ph
 
 ## Current Phase: Phase 1 (MVP)
 
-### Core Foundations
+### Phase 1.1: Core Protocols
 
 #### Base Protocols
-- [ ] Canister hierarchy protocols (all 6 types)
-  - [ ] UserCanister, AssistantCanister, SupervisorCanister
-  - [ ] DocumentCanister, InvocationCanister, ResultCanister
-- [ ] Content protocols (Text, Image designed; Audio/Video deferred)
-  - [ ] TextualContent with MIME type support
-  - [ ] ImageContent with hash-based storage
-- [ ] Provider/Client/Model protocols
-- [ ] Event definitions (MessageStartedEvent, MessageProgressEvent, etc.)
+- [x] Canister hierarchy protocols (all 6 types)
+  - [x] UserCanister, AssistantCanister, SupervisorCanister
+  - [x] DocumentCanister, InvocationCanister, ResultCanister
+- [x] Content protocols (Text, Image designed; Audio/Video deferred)
+  - [x] TextualContent with MIME type support
+  - [x] ImageContent with hash-based storage
+- [x] Provider/Client/Model protocols
+- [x] Event definitions (MessageStartedEvent, MessageProgressEvent, etc.)
+- [x] Tool calling protocols (Invoker, Ensemble, InvokerRegistry)
+- [x] Concrete canister implementations (all 6 types with factory methods)
 
-#### Storage Layer
+### Phase 1.2: Storage Layer
+
+#### Persistence
 - [ ] JSONL message serialization
 - [ ] TOML metadata handling
 - [ ] Hybrid content storage (inline + hash)
@@ -28,20 +32,19 @@ This document tracks tactical implementation work for the current development ph
   - [ ] Content deduplication
 - [ ] Conversation forking support
 
-#### Message Events
-- [ ] Single callback with pattern matching
-- [ ] Event hierarchy implementation
-- [ ] Provider event emission
+### Phase 1.3: Tool Calling Framework
 
-#### Tool Calling
-- [ ] Invoker core abstraction
-- [ ] Ensemble for grouping
-- [ ] InvocationsProcessor protocol
+#### Invoker Infrastructure
+- [ ] Concrete Invoker implementation
+- [ ] Concrete Ensemble implementation
+- [ ] InvokerRegistry implementation
 - [ ] MCP server tool discovery/invocation
 - [ ] Configuration loading from TOML
 - [ ] Fail-fast error handling
 
-#### Provider Implementation
+### Phase 1.4: Provider Implementation
+
+#### Anthropic Provider
 - [ ] Anthropic provider
   - [ ] MessagesProcessor (normalization/nativization)
   - [ ] ControlsProcessor
@@ -49,8 +52,11 @@ This document tracks tactical implementation work for the current development ph
   - [ ] ConversationTokenizer
 - [ ] Streaming and non-streaming modes
 - [ ] Tool calling integration
+- [ ] Event emission during conversation
 
-#### CLI Interface
+### Phase 1.5: CLI Interface
+
+#### User Interface
 - [ ] Basic commands (chat, list, show)
 - [ ] Provider selection
 - [ ] Conversation management
@@ -80,7 +86,15 @@ Deferred items from ADR-005 and other decisions:
 
 ## References
 
+### Official Documentation
 - Architecture Summary: `documentation/architecture/summary.rst`
 - ADRs: `documentation/architecture/decisions/`
 - Design Docs: `documentation/architecture/designs/`
 - Archived Analysis: `.auxiliary/notes/architecture-initial/`
+
+### Prior Art (ai-experiments)
+The original `ai-experiments` project contains valuable precedent and design decisions:
+- Core Messages: https://raw.githubusercontent.com/emcd/ai-experiments/refs/heads/master/sources/aiwb/messages/core.py
+- Invocables Core: https://raw.githubusercontent.com/emcd/ai-experiments/refs/heads/master/sources/aiwb/invocables/core.py
+- Provider Core: https://raw.githubusercontent.com/emcd/ai-experiments/refs/heads/master/sources/aiwb/providers/core.py
+- Provider Interfaces: https://raw.githubusercontent.com/emcd/ai-experiments/refs/heads/master/sources/aiwb/providers/interfaces.py
