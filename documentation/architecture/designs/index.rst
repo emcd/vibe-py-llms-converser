@@ -21,13 +21,12 @@
 Designs
 *******************************************************************************
 
-Design documents describe the implementation architecture of system components.
+This section contains technical design specifications for capabilities.
+Each design documents Python-specific architecture, interface contracts, module organization, and implementation patterns.
 For architectural decisions and their rationale, see :doc:`../decisions/index`.
 
 .. toctree::
    :maxdepth: 2
+   :glob:
 
-   message-abstraction
-   provider-abstraction
-   tool-calling
-   mcp-integration
+   ../openspec/specs/*/design
