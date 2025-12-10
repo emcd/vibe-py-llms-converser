@@ -6,13 +6,22 @@
 
 ### 1. Install System Packages
 
-Install GitHub CLI from the latest release (ensures latest version instead of older Ubuntu package):
+Install GitHub CLI from the latest release (ensures latest version instead of older Ubuntu package).
+
+First, get the latest version number:
 
 ```bash
-# Get latest version number and install
-GH_VERSION=$(wget https://github.com/cli/cli/releases/latest -O - 2>&1 | grep -oP 'href="/cli/cli/releases/tag/v\K[0-9.]+' | head -1) && \
-wget -O /tmp/gh_${GH_VERSION}_linux_amd64.deb https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.deb && \
-dpkg -i /tmp/gh_${GH_VERSION}_linux_amd64.deb
+wget https://github.com/cli/cli/releases/latest -O - 2>&1 | grep -oP 'href="/cli/cli/releases/tag/v\K[0-9.]+' | head -1
+```
+
+Then download and install, substituting the version number from above:
+
+```bash
+wget -O /tmp/gh_VERSION_linux_amd64.deb https://github.com/cli/cli/releases/download/vVERSION/gh_VERSION_linux_amd64.deb
+```
+
+```bash
+dpkg -i /tmp/gh_VERSION_linux_amd64.deb
 ```
 
 ### 2. Install Core Python Tools
@@ -83,25 +92,7 @@ cp .auxiliary/configuration/coders/claude/miscellany/bash-tool-bypass ~/.local/b
 chmod +x ~/.local/bin/bash-tool-bypass
 ```
 
-### 7. Verify Installation
-
-Check that all required tools are available:
-
-```bash
-which mcp-language-server
-which pyright
-which ruff
-which bash-tool-bypass
-hatch --version
-copier --version
-agentsmgr --version
-bash-tool-bypass gh --version
-```
-
 ## Notes
 
-- `librovore` MCP server does not require pre-installation; `uvx` will handle it automatically
 - The `.mcp.json` configuration expects these tools to be in PATH
-- Direct GitHub CLI installation avoids APT GPG signature verification issues
 - The `bash-tool-bypass` wrapper enables execution of commands restricted by Claude Code Bash tool permissions
-- `GH_TOKEN` environment variable should be configured in Claude Code settings for GitHub API authentication
